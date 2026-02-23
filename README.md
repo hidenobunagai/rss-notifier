@@ -45,21 +45,21 @@ createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
 
 ## 定数（Code.js）
 
-| 定数 | デフォルト | 説明 |
-|------|-----------|------|
-| `MAX_NOTIFICATIONS_PER_RUN` | `5` | 1 実行あたりの最大通知件数 |
-| `DISCORD_USERNAME` | `"RSS Notifier"` | Discord に表示されるユーザー名 |
+| 定数                        | デフォルト       | 説明                           |
+| --------------------------- | ---------------- | ------------------------------ |
+| `MAX_NOTIFICATIONS_PER_RUN` | `5`              | 1 実行あたりの最大通知件数     |
+| `DISCORD_USERNAME`          | `"RSS Notifier"` | Discord に表示されるユーザー名 |
 
 ## 管理コマンド
 
-| 関数 | 説明 |
-|------|------|
-| `setWebhookUrl(url)` | Discord Webhook URL を登録 |
-| `setFeedUrls(urls)` | 監視フィード URL 一覧を設定 |
+| 関数                  | 説明                             |
+| --------------------- | -------------------------------- |
+| `setWebhookUrl(url)`  | Discord Webhook URL を登録       |
+| `setFeedUrls(urls)`   | 監視フィード URL 一覧を設定      |
 | `markCurrentAsRead()` | 現在の最新記事を既読としてマーク |
-| `createTimeTrigger()` | 15 分おきのトリガーを作成 |
-| `deleteTimeTrigger()` | トリガーを削除（停止） |
-| `checkFeeds()` | 手動でフィードをチェック |
+| `createTimeTrigger()` | 15 分おきのトリガーを作成        |
+| `deleteTimeTrigger()` | トリガーを削除（停止）           |
+| `checkFeeds()`        | 手動でフィードをチェック         |
 
 ## ファイル構成
 

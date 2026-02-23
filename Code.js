@@ -11,7 +11,7 @@
 //   4. createTimeTrigger() を実行
 const PROPERTY_WEBHOOK_URL = "discordWebhookUrl";
 const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列
-const PROPERTY_FEED_URLS = "feedUrls";         // JSON 配列で保存
+const PROPERTY_FEED_URLS = "feedUrls"; // JSON 配列で保存
 const MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（スパム対策）
 const DISCORD_USERNAME = "RSS Notifier";
 
@@ -74,10 +74,7 @@ function markCurrentAsRead() {
       items.sort((a, b) => a.date - b.date);
       const latest = items[items.length - 1].date;
       if (latest && latest.getTime && !isNaN(latest.getTime())) {
-        getScriptProperties().setProperty(
-          PROPERTY_LAST_SEEN_PREFIX + url,
-          latest.toISOString()
-        );
+        getScriptProperties().setProperty(PROPERTY_LAST_SEEN_PREFIX + url, latest.toISOString());
       }
     } catch (e) {
       Logger.log("markCurrentAsRead error: " + (e && e.stack ? e.stack : e));
@@ -95,14 +92,10 @@ function processFeed(feedUrl) {
   // 古い→新しい順に並べ替え
   items.sort((a, b) => a.date - b.date);
 
-  const lastSeenIso =
-    getScriptProperties().getProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl) ||
-    "";
+  const lastSeenIso = getScriptProperties().getProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl) || "";
   const lastSeenDate = lastSeenIso ? new Date(lastSeenIso) : null;
 
-  let newItems = items.filter(
-    (it) => !lastSeenDate || it.date > lastSeenDate
-  );
+  let newItems = items.filter((it) => !lastSeenDate || it.date > lastSeenDate);
   if (!newItems.length) {
     return; // 更新なし
   }
@@ -123,10 +116,7 @@ function processFeed(feedUrl) {
 
   // 最後（＝最新）の日時を既読として保存
   const latest = newItems[newItems.length - 1].date;
-  getScriptProperties().setProperty(
-    PROPERTY_LAST_SEEN_PREFIX + feedUrl,
-    latest.toISOString()
-  );
+  getScriptProperties().setProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl, latest.toISOString());
 }
 
 function fetchFeedItems(feedUrl) {
@@ -150,8 +140,7 @@ function fetchFeedItems(feedUrl) {
     return parseAtom(root);
   } else {
     // 一部 RSS 1.0 (RDF) 等の簡易対応
-    const channel =
-      root.getChild("channel") || root.getChild("channel", root.getNamespace());
+    const channel = root.getChild("channel") || root.getChild("channel", root.getNamespace());
     if (channel) {
       return parseRssChannel(channel);
     }
@@ -173,8 +162,7 @@ function parseRssChannel(channel) {
     const link = getChildText(it, "link");
     const guid = getChildText(it, "guid");
     const pubDate =
-      getChildText(it, "pubDate") ||
-      getChildTextNS(it, "date", "http://purl.org/dc/elements/1.1/");
+      getChildText(it, "pubDate") || getChildTextNS(it, "date", "http://purl.org/dc/elements/1.1/");
     const date = safeParseDate(pubDate);
     const id = guid || link || title + "|" + (pubDate || "");
     out.push({ id, title, link, date });
@@ -220,12 +208,10 @@ function parseAtom(root) {
 
 // ===== Discord 通知 =====
 function notifyDiscord(item, feedUrl) {
-  const webhook = (
-    getScriptProperties().getProperty(PROPERTY_WEBHOOK_URL) || ""
-  ).trim();
+  const webhook = (getScriptProperties().getProperty(PROPERTY_WEBHOOK_URL) || "").trim();
   if (!webhook) {
     throw new Error(
-      'Webhook URL が未設定です。setWebhookUrl("<WEBHOOK>") を先に実行してください。'
+      'Webhook URL が未設定です。setWebhookUrl("<WEBHOOK>") を先に実行してください。',
     );
   }
   const content = `新着: ${item.title}\n${item.link || ""}\n(From ${feedUrl})`;
@@ -244,9 +230,7 @@ function notifyDiscord(item, feedUrl) {
   });
   const code = res.getResponseCode();
   if (code >= 400) {
-    throw new Error(
-      "Discord post failed " + code + ": " + res.getContentText()
-    );
+    throw new Error("Discord post failed " + code + ": " + res.getContentText());
   }
 }
 
@@ -254,10 +238,7 @@ function notifyDiscord(item, feedUrl) {
 
 /** Discord Webhook URL を Script Properties に登録する */
 function setWebhookUrl(webhookUrl) {
-  if (
-    !webhookUrl ||
-    webhookUrl.indexOf("https://discord.com/api/webhooks/") !== 0
-  ) {
+  if (!webhookUrl || webhookUrl.indexOf("https://discord.com/api/webhooks/") !== 0) {
     throw new Error("不正な Webhook URL です");
   }
   getScriptProperties().setProperty(PROPERTY_WEBHOOK_URL, webhookUrl);
