@@ -4,21 +4,26 @@
 // - 既読管理は Script Properties に保存します。
 
 // ===== 設定値 =====
-// 初回は `setWebhookUrl('<YOUR_WEBHOOK_URL>')` を実行して登録してください。
-var PROPERTY_WEBHOOK_URL = "discordWebhookUrl";
-var PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列
-var MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（多すぎるスパム対策）
-var DISCORD_USERNAME = "RSS Notifier";
-var FEED_URLS = [
-  "https://misato-gurashi.com/feed",
-  "http://www.misatopi.com/feed/",
-];
+// 初回セットアップ:
+//   1. setWebhookUrl('<DISCORD_WEBHOOK_URL>') を実行
+//   2. setFeedUrls(['https://example.com/feed', ...]) を実行
+//   3. markCurrentAsRead() を実行（既存記事を通知しないようスキップ）
+//   4. createTimeTrigger() を実行
+const PROPERTY_WEBHOOK_URL = "discordWebhookUrl";
+const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列
+const PROPERTY_FEED_URLS = "feedUrls";         // JSON 配列で保存
+const MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（スパム対策）
+const DISCORD_USERNAME = "RSS Notifier";
 
 // ===== エントリポイント =====
 function checkFeeds() {
-  var errors = [];
-  for (var i = 0; i < FEED_URLS.length; i++) {
-    var url = FEED_URLS[i];
+  const feedUrls = getFeedUrls();
+  if (!feedUrls.length) {
+    Logger.log("feedUrls が未設定です。setFeedUrls([...]) を先に実行してください。");
+    return;
+  }
+  const errors = [];
+  for (const url of feedUrls) {
     try {
       processFeed(url);
     } catch (e) {
@@ -33,10 +38,10 @@ function checkFeeds() {
 // 時間主導トリガを作成（例: 15分毎）
 function createTimeTrigger() {
   // 二重作成防止（同名の既存トリガを削除）
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === "checkFeeds") {
-      ScriptApp.deleteTrigger(triggers[i]);
+  const triggers = ScriptApp.getProjectTriggers();
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === "checkFeeds") {
+      ScriptApp.deleteTrigger(trigger);
     }
   }
   ScriptApp.newTrigger("checkFeeds").timeBased().everyMinutes(15).create();
@@ -44,11 +49,11 @@ function createTimeTrigger() {
 
 // 作成済みの時間主導トリガ（checkFeeds）を停止（削除）
 function deleteTimeTrigger() {
-  var triggers = ScriptApp.getProjectTriggers();
-  var removed = 0;
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === "checkFeeds") {
-      ScriptApp.deleteTrigger(triggers[i]);
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === "checkFeeds") {
+      ScriptApp.deleteTrigger(trigger);
       removed++;
     }
   }
@@ -57,15 +62,17 @@ function deleteTimeTrigger() {
 
 // 初回導入時に現在の最新記事を既読として記録（通知を発生させない）
 function markCurrentAsRead() {
-  for (var i = 0; i < FEED_URLS.length; i++) {
-    var url = FEED_URLS[i];
+  const feedUrls = getFeedUrls();
+  if (!feedUrls.length) {
+    Logger.log("feedUrls が未設定です。setFeedUrls([...]) を先に実行してください。");
+    return;
+  }
+  for (const url of feedUrls) {
     try {
-      var items = fetchFeedItems(url);
+      const items = fetchFeedItems(url);
       if (!items || !items.length) continue;
-      items.sort(function (a, b) {
-        return a.date - b.date;
-      });
-      var latest = items[items.length - 1].date;
+      items.sort((a, b) => a.date - b.date);
+      const latest = items[items.length - 1].date;
       if (latest && latest.getTime && !isNaN(latest.getTime())) {
         getScriptProperties().setProperty(
           PROPERTY_LAST_SEEN_PREFIX + url,
@@ -80,28 +87,22 @@ function markCurrentAsRead() {
 
 // ===== 実装本体 =====
 function processFeed(feedUrl) {
-  var items = fetchFeedItems(feedUrl);
+  let items = fetchFeedItems(feedUrl);
   if (!items || !items.length) {
     return;
   }
 
   // 古い→新しい順に並べ替え
-  items.sort(function (a, b) {
-    return a.date - b.date;
-  });
+  items.sort((a, b) => a.date - b.date);
 
-  var lastSeenIso =
+  const lastSeenIso =
     getScriptProperties().getProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl) ||
     "";
-  var lastSeenDate = lastSeenIso ? new Date(lastSeenIso) : null;
+  const lastSeenDate = lastSeenIso ? new Date(lastSeenIso) : null;
 
-  var newItems = [];
-  for (var i = 0; i < items.length; i++) {
-    var it = items[i];
-    if (!lastSeenDate || it.date > lastSeenDate) {
-      newItems.push(it);
-    }
-  }
+  let newItems = items.filter(
+    (it) => !lastSeenDate || it.date > lastSeenDate
+  );
   if (!newItems.length) {
     return; // 更新なし
   }
@@ -111,9 +112,9 @@ function processFeed(feedUrl) {
     newItems = newItems.slice(newItems.length - MAX_NOTIFICATIONS_PER_RUN);
   }
 
-  for (var j = 0; j < newItems.length; j++) {
+  for (const item of newItems) {
     try {
-      notifyDiscord(newItems[j], feedUrl);
+      notifyDiscord(item, feedUrl);
     } catch (e) {
       // 個別投稿エラーはログのみに留め、後続を続行
       Logger.log("Notify error: " + (e && e.stack ? e.stack : e));
@@ -121,7 +122,7 @@ function processFeed(feedUrl) {
   }
 
   // 最後（＝最新）の日時を既読として保存
-  var latest = newItems[newItems.length - 1].date;
+  const latest = newItems[newItems.length - 1].date;
   getScriptProperties().setProperty(
     PROPERTY_LAST_SEEN_PREFIX + feedUrl,
     latest.toISOString()
@@ -129,19 +130,19 @@ function processFeed(feedUrl) {
 }
 
 function fetchFeedItems(feedUrl) {
-  var res = UrlFetchApp.fetch(feedUrl, {
+  const res = UrlFetchApp.fetch(feedUrl, {
     followRedirects: true,
     muteHttpExceptions: true,
     validateHttpsCertificates: true,
   });
-  var code = res.getResponseCode();
+  const code = res.getResponseCode();
   if (code >= 400) {
     throw new Error("Fetch failed " + code + " for " + feedUrl);
   }
-  var xmlText = res.getContentText();
-  var doc = XmlService.parse(xmlText);
-  var root = doc.getRootElement();
-  var name = root.getName().toLowerCase();
+  const xmlText = res.getContentText();
+  const doc = XmlService.parse(xmlText);
+  const root = doc.getRootElement();
+  const name = root.getName().toLowerCase();
 
   if (name === "rss") {
     return parseRss2(root);
@@ -149,7 +150,7 @@ function fetchFeedItems(feedUrl) {
     return parseAtom(root);
   } else {
     // 一部 RSS 1.0 (RDF) 等の簡易対応
-    var channel =
+    const channel =
       root.getChild("channel") || root.getChild("channel", root.getNamespace());
     if (channel) {
       return parseRssChannel(channel);
@@ -160,46 +161,44 @@ function fetchFeedItems(feedUrl) {
 
 // RSS 2.0
 function parseRss2(root) {
-  var channel = root.getChild("channel");
+  const channel = root.getChild("channel");
   return parseRssChannel(channel);
 }
 
 function parseRssChannel(channel) {
-  var items = channel.getChildren("item");
-  var out = [];
-  for (var i = 0; i < items.length; i++) {
-    var it = items[i];
-    var title = getChildText(it, "title");
-    var link = getChildText(it, "link");
-    var guid = getChildText(it, "guid");
-    var pubDate =
+  const items = channel.getChildren("item");
+  const out = [];
+  for (const it of items) {
+    const title = getChildText(it, "title");
+    const link = getChildText(it, "link");
+    const guid = getChildText(it, "guid");
+    const pubDate =
       getChildText(it, "pubDate") ||
       getChildTextNS(it, "date", "http://purl.org/dc/elements/1.1/");
-    var date = safeParseDate(pubDate);
-    var id = guid || link || title + "|" + (pubDate || "");
-    out.push({ id: id, title: title, link: link, date: date });
+    const date = safeParseDate(pubDate);
+    const id = guid || link || title + "|" + (pubDate || "");
+    out.push({ id, title, link, date });
   }
   return out;
 }
 
 // Atom 1.0
 function parseAtom(root) {
-  var ns = root.getNamespace();
-  var entries = root.getChildren("entry", ns);
-  var out = [];
-  for (var i = 0; i < entries.length; i++) {
-    var e = entries[i];
-    var titleEl = e.getChild("title", ns);
-    var title = titleEl ? titleEl.getText() : "";
+  const ns = root.getNamespace();
+  const entries = root.getChildren("entry", ns);
+  const out = [];
+  for (const e of entries) {
+    const titleEl = e.getChild("title", ns);
+    const title = titleEl ? titleEl.getText() : "";
 
     // link 要素（rel="alternate" を優先、無ければ最初の href）
-    var link = "";
-    var links = e.getChildren("link", ns);
-    for (var j = 0; j < links.length; j++) {
-      var relAttr = links[j].getAttribute("rel");
-      var rel = relAttr ? relAttr.getValue() : "";
-      var hrefAttr = links[j].getAttribute("href");
-      var href = hrefAttr ? hrefAttr.getValue() : "";
+    let link = "";
+    const links = e.getChildren("link", ns);
+    for (const linkEl of links) {
+      const relAttr = linkEl.getAttribute("rel");
+      const rel = relAttr ? relAttr.getValue() : "";
+      const hrefAttr = linkEl.getAttribute("href");
+      const href = hrefAttr ? hrefAttr.getValue() : "";
       if (!href) continue;
       if (rel === "alternate") {
         link = href;
@@ -210,18 +209,18 @@ function parseAtom(root) {
       }
     }
 
-    var idEl = e.getChild("id", ns);
-    var id = idEl ? idEl.getText() : link || title;
-    var updatedEl = e.getChild("updated", ns) || e.getChild("published", ns);
-    var date = safeParseDate(updatedEl ? updatedEl.getText() : "");
-    out.push({ id: id, title: title, link: link, date: date });
+    const idEl = e.getChild("id", ns);
+    const id = idEl ? idEl.getText() : link || title;
+    const updatedEl = e.getChild("updated", ns) || e.getChild("published", ns);
+    const date = safeParseDate(updatedEl ? updatedEl.getText() : "");
+    out.push({ id, title, link, date });
   }
   return out;
 }
 
 // ===== Discord 通知 =====
 function notifyDiscord(item, feedUrl) {
-  var webhook = (
+  const webhook = (
     getScriptProperties().getProperty(PROPERTY_WEBHOOK_URL) || ""
   ).trim();
   if (!webhook) {
@@ -229,29 +228,21 @@ function notifyDiscord(item, feedUrl) {
       'Webhook URL が未設定です。setWebhookUrl("<WEBHOOK>") を先に実行してください。'
     );
   }
-  var content =
-    "新着: " +
-    item.title +
-    "\n" +
-    (item.link || "") +
-    "\n" +
-    "(From " +
-    feedUrl +
-    ")";
-  var payload = {
+  const content = `新着: ${item.title}\n${item.link || ""}\n(From ${feedUrl})`;
+  const payload = {
     username: DISCORD_USERNAME,
-    content: content,
+    content,
     allowed_mentions: { parse: [] },
     // embeds を使う場合は以下のように拡張可能
     // embeds: [{ title: item.title, url: item.link }]
   };
-  var res = UrlFetchApp.fetch(webhook, {
+  const res = UrlFetchApp.fetch(webhook, {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   });
-  var code = res.getResponseCode();
+  const code = res.getResponseCode();
   if (code >= 400) {
     throw new Error(
       "Discord post failed " + code + ": " + res.getContentText()
@@ -260,6 +251,8 @@ function notifyDiscord(item, feedUrl) {
 }
 
 // ===== ユーティリティ =====
+
+/** Discord Webhook URL を Script Properties に登録する */
 function setWebhookUrl(webhookUrl) {
   if (
     !webhookUrl ||
@@ -268,6 +261,32 @@ function setWebhookUrl(webhookUrl) {
     throw new Error("不正な Webhook URL です");
   }
   getScriptProperties().setProperty(PROPERTY_WEBHOOK_URL, webhookUrl);
+  Logger.log("Webhook URL を登録しました。");
+}
+
+/**
+ * 監視する RSS/Atom フィードの URL 一覧を Script Properties に登録する
+ * @param {string[]} urls - フィード URL の配列
+ * @example setFeedUrls(['https://example.com/feed', 'https://blog.example.jp/rss'])
+ */
+function setFeedUrls(urls) {
+  if (!Array.isArray(urls) || !urls.length) {
+    throw new Error("urls は空でない配列で指定してください");
+  }
+  getScriptProperties().setProperty(PROPERTY_FEED_URLS, JSON.stringify(urls));
+  Logger.log("feedUrls を登録しました: " + urls.join(", "));
+}
+
+/** Script Properties からフィード URL 配列を取得する */
+function getFeedUrls() {
+  const raw = getScriptProperties().getProperty(PROPERTY_FEED_URLS) || "[]";
+  try {
+    const urls = JSON.parse(raw);
+    return Array.isArray(urls) ? urls : [];
+  } catch (e) {
+    Logger.log("feedUrls の解析に失敗しました: " + e);
+    return [];
+  }
 }
 
 function getScriptProperties() {
@@ -275,25 +294,25 @@ function getScriptProperties() {
 }
 
 function getChildText(el, name) {
-  var children = el.getChildren();
-  name = (name || "").toLowerCase();
-  for (var i = 0; i < children.length; i++) {
-    if (children[i].getName().toLowerCase() === name) {
-      return children[i].getText();
+  const children = el.getChildren();
+  const nameLower = (name || "").toLowerCase();
+  for (const child of children) {
+    if (child.getName().toLowerCase() === nameLower) {
+      return child.getText();
     }
   }
   return "";
 }
 
 function getChildTextNS(el, name, nsUri) {
-  var ns = XmlService.getNamespace(nsUri);
-  var child = el.getChild(name, ns);
+  const ns = XmlService.getNamespace(nsUri);
+  const child = el.getChild(name, ns);
   return child ? child.getText() : "";
 }
 
 function safeParseDate(s) {
   if (!s) return new Date(0);
-  var d = new Date(s);
+  const d = new Date(s);
   if (isNaN(d.getTime())) return new Date(0);
   return d;
 }

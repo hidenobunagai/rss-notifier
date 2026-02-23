@@ -1,0 +1,9 @@
+# clasp 設定（scriptId を含むため除外）
+.clasp.json
+
+# macOS
+.DS_Store
+
+# エディタ
+.vscode/
+*.swp
