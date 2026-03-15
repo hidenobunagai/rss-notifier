@@ -14,6 +14,8 @@ const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文�
 const PROPERTY_FEED_URLS = "feedUrls"; // JSON 配列で保存
 const MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（スパム対策）
 const DISCORD_USERNAME = "RSS Notifier";
+const DISCORD_EMBED_COLOR = 3447003; // #3498DB (青)
+const NOTIFY_INTERVAL_MS = 1000; // Discord レート制限対策: 投稿間隔 (ms)
 
 // ===== エントリポイント =====
 function checkFeeds() {
@@ -105,18 +107,28 @@ function processFeed(feedUrl) {
     newItems = newItems.slice(newItems.length - MAX_NOTIFICATIONS_PER_RUN);
   }
 
-  for (const item of newItems) {
+  const webhook = (getScriptProperties().getProperty(PROPERTY_WEBHOOK_URL) || "").trim();
+  if (!webhook) {
+    throw new Error('Webhook URL が未設定です。setWebhookUrl("<WEBHOOK>") を先に実行してください。');
+  }
+
+  let lastSuccessDate = null;
+  for (let i = 0; i < newItems.length; i++) {
+    if (i > 0) Utilities.sleep(NOTIFY_INTERVAL_MS);
+    const item = newItems[i];
     try {
-      notifyDiscord(item, feedUrl);
+      notifyDiscord(item, feedUrl, webhook);
+      lastSuccessDate = item.date;
     } catch (e) {
       // 個別投稿エラーはログのみに留め、後続を続行
       Logger.log("Notify error: " + (e && e.stack ? e.stack : e));
     }
   }
 
-  // 最後（＝最新）の日時を既読として保存
-  const latest = newItems[newItems.length - 1].date;
-  getScriptProperties().setProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl, latest.toISOString());
+  // 送信成功した最新記事の日時のみを既読として保存（失敗分は次回リトライ対象に残す）
+  if (lastSuccessDate) {
+    getScriptProperties().setProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl, lastSuccessDate.toISOString());
+  }
 }
 
 function fetchFeedItems(feedUrl) {
@@ -207,20 +219,20 @@ function parseAtom(root) {
 }
 
 // ===== Discord 通知 =====
-function notifyDiscord(item, feedUrl) {
-  const webhook = (getScriptProperties().getProperty(PROPERTY_WEBHOOK_URL) || "").trim();
-  if (!webhook) {
-    throw new Error(
-      'Webhook URL が未設定です。setWebhookUrl("<WEBHOOK>") を先に実行してください。',
-    );
-  }
-  const content = `新着: ${item.title}\n${item.link || ""}\n(From ${feedUrl})`;
+function notifyDiscord(item, feedUrl, webhook) {
+  const hasTimestamp = item.date && item.date.getTime() !== 0;
   const payload = {
     username: DISCORD_USERNAME,
-    content,
     allowed_mentions: { parse: [] },
-    // embeds を使う場合は以下のように拡張可能
-    // embeds: [{ title: item.title, url: item.link }]
+    embeds: [
+      {
+        title: item.title || "(タイトルなし)",
+        ...(item.link ? { url: item.link } : {}),
+        color: DISCORD_EMBED_COLOR,
+        footer: { text: feedUrl },
+        ...(hasTimestamp ? { timestamp: item.date.toISOString() } : {}),
+      },
+    ],
   };
   const res = UrlFetchApp.fetch(webhook, {
     method: "post",
@@ -238,7 +250,8 @@ function notifyDiscord(item, feedUrl) {
 
 /** Discord Webhook URL を Script Properties に登録する */
 function setWebhookUrl(webhookUrl) {
-  if (!webhookUrl || webhookUrl.indexOf("https://discord.com/api/webhooks/") !== 0) {
+  const validHost = /^https:\/\/(discord\.com|discordapp\.com|ptb\.discord\.com|canary\.discord\.com)\/api\/webhooks\//;
+  if (!webhookUrl || !validHost.test(webhookUrl)) {
     throw new Error("不正な Webhook URL です");
   }
   getScriptProperties().setProperty(PROPERTY_WEBHOOK_URL, webhookUrl);

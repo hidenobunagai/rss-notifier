@@ -45,10 +45,12 @@ createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
 
 ## 定数（Code.js）
 
-| 定数                        | デフォルト       | 説明                           |
-| --------------------------- | ---------------- | ------------------------------ |
-| `MAX_NOTIFICATIONS_PER_RUN` | `5`              | 1 実行あたりの最大通知件数     |
-| `DISCORD_USERNAME`          | `"RSS Notifier"` | Discord に表示されるユーザー名 |
+| 定数                        | デフォルト       | 説明                               |
+| --------------------------- | ---------------- | ---------------------------------- |
+| `MAX_NOTIFICATIONS_PER_RUN` | `5`              | 1 実行あたりの最大通知件数         |
+| `DISCORD_USERNAME`          | `"RSS Notifier"` | Discord に表示されるユーザー名     |
+| `DISCORD_EMBED_COLOR`       | `3447003`        | embed の左帯の色 (#3498DB, 青)     |
+| `NOTIFY_INTERVAL_MS`        | `1000`           | 投稿間の待機時間 ms（レート制限対策） |
 
 ## 管理コマンド
 
