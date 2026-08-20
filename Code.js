@@ -50,13 +50,7 @@ function checkFeeds() {
 
 // 時間主導トリガを作成（例: 15分毎）
 function createTimeTrigger() {
-  // 二重作成防止（同名の既存トリガを削除）
-  const triggers = ScriptApp.getProjectTriggers();
-  for (const trigger of triggers) {
-    if (trigger.getHandlerFunction() === "checkFeeds") {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  }
+  deleteTimeTrigger(); // 二重作成防止（同名の既存トリガを削除）
   ScriptApp.newTrigger("checkFeeds").timeBased().everyMinutes(15).create();
 }
 
@@ -173,9 +167,7 @@ function processFeed(feedUrl) {
 
 function fetchFeedItems(feedUrl) {
   const res = UrlFetchApp.fetch(feedUrl, {
-    followRedirects: true,
     muteHttpExceptions: true,
-    validateHttpsCertificates: true,
   });
   const code = res.getResponseCode();
   if (code >= 400) {
@@ -187,25 +179,15 @@ function fetchFeedItems(feedUrl) {
   const name = root.getName().toLowerCase();
 
   if (name === "rss") {
-    return parseRss2(root);
+    return parseRssChannel(root.getChild("channel"));
   } else if (name === "feed") {
     return parseAtom(root);
   } else {
-    // 一部 RSS 1.0 (RDF) 等の簡易対応
-    const channel = root.getChild("channel") || root.getChild("channel", root.getNamespace());
-    if (channel) {
-      return parseRssChannel(channel);
-    }
     throw new Error("Unsupported feed root: " + name);
   }
 }
 
 // RSS 2.0
-function parseRss2(root) {
-  const channel = root.getChild("channel");
-  return parseRssChannel(channel);
-}
-
 function parseRssChannel(channel) {
   const items = channel.getChildren("item");
   const out = [];
