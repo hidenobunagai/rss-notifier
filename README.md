@@ -1,4 +1,4 @@
-# rss-discord-notifier
+# rss-notifier
 
 RSS/Atom フィードの更新を検出して Discord および LINE に通知する Google Apps Script (GAS) プロジェクトです。Discord / LINE はそれぞれ個別に有効化でき、両方同時にも送信可能です。
 
