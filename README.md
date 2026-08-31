@@ -1,25 +1,40 @@
 # rss-notifier
 
-RSS/Atom フィードの更新を検出して Discord および LINE に通知する Google Apps Script (GAS) プロジェクトです。Discord / LINE はそれぞれ個別に有効化でき、両方同時にも送信可能です。
+[![Live Architecture](https://img.shields.io/badge/Architecture-Live_Interactive_Diagram-blue?style=flat-square)](https://hidenobunagai.github.io/rss-notifier/)
+[![Google Apps Script](https://img.shields.io/badge/Runtime-Google_Apps_Script-4285F4?style=flat-square&logo=google)](https://developers.google.com/apps-script)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 
-## 機能
+[English](README.md) | [日本語 (Japanese)](README.ja.md)
 
-- 複数の RSS/Atom フィードを定期ポーリング
-- 新着記事を Discord Webhook および LINE Messaging API で通知
-- Discord / LINE は個別に有効化可能（両方同時送信にも対応）
-- 1 回の実行あたりの通知件数を制限（スパム防止）
-- 既読管理を Script Properties に保存（再起動後も状態を維持）
+A lightweight Google Apps Script (GAS) service that monitors RSS/Atom feeds and dispatches real-time notifications to **Discord** and **LINE**. Channels can be activated individually or simultaneously.
 
-## システム構成
+---
 
-[![システムアーキテクチャ図](docs/architecture.png)](https://hidenobunagai.github.io/rss-notifier/)
+## ✨ Features
 
-> 🔗 **インタラクティブ構成図（Live Preview）**: [https://hidenobunagai.github.io/rss-notifier/](https://hidenobunagai.github.io/rss-notifier/)
-> ブラウザで開くことで、ライト/ダークテーマ切替、ガイド付きステップビュー（全体フロー / GAS内部処理 / 通知ゲートウェイ）、各ノードのハイライトや依存関係の追跡が可能です。
+- **Multi-Feed Polling**: Periodically fetches and parses multiple RSS 2.0 and Atom 1.0 feeds.
+- **Dual-Channel Notifications**: Delivers styled Discord Webhook embeds and LINE Messaging API push messages.
+- **Independent Dispatch**: Enable Discord only, LINE only, or both concurrently.
+- **Spam & Rate-Limit Protection**: Enforces maximum notifications per run (`MAX_NOTIFICATIONS_PER_RUN`), sleep intervals, and LINE 429 exponential backoff retries.
+- **Persistent State**: Stores last-seen timestamps in `Script Properties` to prevent duplicate alerts across runs.
+- **Zero Hosting Cost**: Runs completely serverless on Google Apps Script free quotas.
 
-## セットアップ
+---
 
-### 1. clasp でプッシュ
+## 🏛️ System Architecture
+
+[![System Architecture](docs/architecture.png)](https://hidenobunagai.github.io/rss-notifier/)
+
+> 🔗 **Interactive Architecture Map (Live Preview)**: [https://hidenobunagai.github.io/rss-notifier/](https://hidenobunagai.github.io/rss-notifier/)  
+> Open in your browser for light/dark theme toggles, guided walk-through chapters (Full Flow / GAS Internals / Dispatch Gateways), node inspection, and relationship tracing.
+
+---
+
+## 🚀 Getting Started
+
+### 1. Push Code with clasp
+
+Clone or download this repository, then push it to your Google Apps Script project:
 
 ```bash
 bun add -g @google/clasp
@@ -27,107 +42,117 @@ clasp login
 clasp push
 ```
 
-### 2. Script Properties を設定
+### 2. Configure Script Properties
 
-GAS エディタのスクリプトエディタで以下の関数を**順に**実行します。
-Discord / LINE どちらを使うかによって必要な関数が異なります（両方も可）。
+Open the Apps Script editor and run the following helper functions in order.
+Configure Discord, LINE, or both depending on your target platforms:
 
 ```javascript
-// --- Discord を使う場合 ---
-// Discord Webhook URL を登録
+// --- For Discord ---
+// Register your Discord Webhook URL
 setWebhookUrl("https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN");
 
-// --- LINE を使う場合 ---
-// LINE Messaging API のチャネルアクセストークンを登録
+// --- For LINE ---
+// Register your LINE Messaging API Channel Access Token
 setLineChannelAccessToken("YOUR_LINE_CHANNEL_ACCESS_TOKEN");
-// LINE の送信先 ID (ユーザー/グループ/トークルーム) を登録
+// Register the target User ID, Group ID, or Room ID
 setLineTargetId("YOUR_LINE_TARGET_ID");
 
-// --- 共通 ---
-// 監視するフィード URL を登録
-setFeedUrls(["https://example.com/feed", "https://blog.example.jp/rss"]);
+// --- Common Setup ---
+// Register RSS / Atom feed URLs to monitor
+setFeedUrls([
+  "https://example.com/feed",
+  "https://blog.example.com/rss.xml"
+]);
 
-// 既存記事を既読としてマーク（初回通知をスキップ）
+// Mark existing articles as read (skips notifying past articles on initial run)
 markCurrentAsRead();
 ```
 
-> 通知先の有効条件:
->
-> - Discord: `discordWebhookUrl` が設定されていれば送信
-> - LINE: `lineChannelAccessToken` と `lineTargetId` が両方設定されていれば送信
-> - どちらも未設定の場合はエラーで中断します。少なくとも一方は設定してください。
+> **Channel Activation Rules**:
+> - **Discord**: Enabled if `discordWebhookUrl` is set.
+> - **LINE**: Enabled if both `lineChannelAccessToken` and `lineTargetId` are set.
+> - At least one destination must be configured.
 
-### 3. 定期トリガーを作成
+### 3. Create Time-Driven Trigger
 
 ```javascript
-createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
+createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 minutes
 ```
 
-## 定数（Code.js）
+---
 
-| 定数                         | デフォルト       | 説明                                      |
-| ---------------------------- | ---------------- | ----------------------------------------- |
-| `MAX_NOTIFICATIONS_PER_RUN`  | `5`              | 1 実行あたりの最大通知件数                |
-| `DISCORD_USERNAME`           | `"RSS Notifier"` | Discord に表示されるユーザー名            |
-| `DISCORD_EMBED_COLOR`        | `3447003`        | embed の左帯の色 (#3498DB, 青)            |
-| `NOTIFY_INTERVAL_MS`         | `1000`           | Discord 投稿間の待機時間 ms（レート制限） |
-| `LINE_MAX_TEXT_LENGTH`       | `5000`           | LINE 1 メッセージあたりの文字数上限       |
-| `LINE_MAX_MESSAGES_PER_PUSH` | `5`              | LINE 1 push あたりのメッセージ数上限      |
-| `LINE_CHUNK_INTERVAL_MS`     | `1000`           | LINE push 間の待機時間 ms（レート制限）   |
-| `LINE_MAX_RETRIES`           | `3`              | LINE 送信の最大リトライ回数               |
+## ⚙️ Configuration Constants (`Code.js`)
 
-## 管理コマンド
+| Constant | Default | Description |
+| :--- | :--- | :--- |
+| `MAX_NOTIFICATIONS_PER_RUN` | `5` | Maximum notifications sent per execution (anti-spam) |
+| `DISCORD_USERNAME` | `"RSS Notifier"` | Display username for Discord posts |
+| `DISCORD_EMBED_COLOR` | `3447003` | Left border accent color for Discord embeds (`#3498DB` blue) |
+| `NOTIFY_INTERVAL_MS` | `1000` | Delay between Discord posts in ms (rate-limit prevention) |
+| `LINE_MAX_TEXT_LENGTH` | `5000` | Maximum character length per LINE message |
+| `LINE_MAX_MESSAGES_PER_PUSH` | `5` | Maximum messages batched per LINE push call |
+| `LINE_CHUNK_INTERVAL_MS` | `1000` | Delay between consecutive LINE push requests in ms |
+| `LINE_MAX_RETRIES` | `3` | Maximum retry attempts for LINE API calls |
 
-| 関数                               | 説明                                                   |
-| ---------------------------------- | ------------------------------------------------------ |
-| `setWebhookUrl(url)`               | Discord Webhook URL を登録                             |
-| `setLineChannelAccessToken(token)` | LINE チャネルアクセストークンを登録                    |
-| `setLineTargetId(id)`              | LINE 送信先 ID (ユーザー/グループ/トークルーム) を登録 |
-| `setFeedUrls(urls)`                | 監視フィード URL 一覧を設定                            |
-| `markCurrentAsRead()`              | 現在の最新記事を既読としてマーク                       |
-| `createTimeTrigger()`              | 15 分おきのトリガーを作成                              |
-| `deleteTimeTrigger()`              | トリガーを削除（停止）                                 |
-| `checkFeeds()`                     | 手動でフィードをチェック                               |
+---
 
-## LINE Messaging API のセットアップ
+## 🛠️ Management Commands
 
-> **注意**: 旧来の LINE Notify は 2025/3 に廃止されたため、本プロジェクトでは LINE Messaging API（公式アカウント経由の push メッセージ）を使用します。
+| Function | Description |
+| :--- | :--- |
+| `setWebhookUrl(url)` | Save Discord Webhook URL to Script Properties |
+| `setLineChannelAccessToken(token)` | Save LINE Channel Access Token to Script Properties |
+| `setLineTargetId(id)` | Save LINE Target ID (User/Group/Room) to Script Properties |
+| `setFeedUrls(urls)` | Save list of feed URLs to Script Properties |
+| `markCurrentAsRead()` | Mark all current latest feed items as seen |
+| `createTimeTrigger()` | Create 15-minute periodic trigger |
+| `deleteTimeTrigger()` | Remove the periodic trigger (pause monitoring) |
+| `checkFeeds()` | Manually trigger feed check and notification |
+| `validateSetup()` | Verify configuration and return diagnostics |
 
-1. [LINE Developers](https://developers.line.biz/) でプロバイダーと Messaging API チャネルを作成
-2. チャネルの「Messaging API 設定」で「チャネルアクセストークン」を発行し、控える
-3. 通知を受け取りたい LINE アカウント（自分自身や家族グループ）を公式アカウントと友だち追加
-4. 送信先 ID を確認:
-   - 個別ユーザー: 公式アカウントにメッセージを送って webhook で取得する `userId` など
-   - グループ / トークルーム: 公式アカウントをグループに招待した後に同ページの「グループ / トークルーム ID」を参照
-5. Apps Script で `setLineChannelAccessToken(...)` と `setLineTargetId(...)` を実行してプロパティ登録
+---
 
-### LINE の注意点
+## 📱 LINE Messaging API Setup Guide
 
-- 無料枠（Light Plan）では月 1,000 メッセージまで。超過分は従量課金または送信制限されるため、通知頻度に注意
-- `push` API は友だち追加済みの相手にのみ届く。未追加ユーザーへの送信は失敗する
-- グループ / トークルームへ送る場合は公式アカウントをその部屋に招待しておく
-- アクセストークンは定期的にローテーション推奨（漏洩時は即時再発行）
+> **Note**: Legacy LINE Notify was discontinued in March 2025. This project uses the official **LINE Messaging API** (push messages via Official Account).
 
-## トラブルシュート
+1. Create a Provider and a Messaging API Channel on [LINE Developers](https://developers.line.biz/).
+2. Issue a **Channel Access Token** under "Messaging API Settings".
+3. Add the Official Account as a friend (or invite it to your target Group).
+4. Retrieve the target ID:
+   - **User ID**: From the developer console or Webhook events.
+   - **Group ID**: From group invite webhook events or console settings.
+5. In Apps Script, execute `setLineChannelAccessToken(...)` and `setLineTargetId(...)`.
 
-- **通知が来ない**: `discordWebhookUrl` または `lineChannelAccessToken` + `lineTargetId` が未設定ではないか確認。実行ログに `Notify error` が出ていないか確認
-- **Discord 429**: サーバー側のレート制限。しばらく待つか投稿間隔を空ける
-- **LINE 401 Unauthorized**: チャネルアクセストークンが不正または期限切れ。再発行して `setLineChannelAccessToken(...)` で更新
-- **LINE 400 Bad Request**: `lineTargetId` が不正、または公式アカウントと友だち追加されていない。ID の種類（ユーザー / グループ / トークルーム）と友だち追加状態を確認
-- **LINE で届かない（エラーなし）**: 無料枠の月 1,000 メッセージ上限に達していないか確認
+### LINE Quota Considerations
+- The **Free Light Plan** includes 1,000 push messages/month.
+- Push messages can only reach users/groups that have added the bot as a friend.
 
-## ファイル構成
+---
+
+## 🔍 Troubleshooting
+
+- **No notifications sent**: Ensure `discordWebhookUrl` or both `lineChannelAccessToken` + `lineTargetId` are configured. Run `validateSetup()` to diagnose.
+- **Discord 429**: Rate-limited by Discord. Check `NOTIFY_INTERVAL_MS` or reduce execution frequency.
+- **LINE 401 Unauthorized**: Token is invalid or expired. Re-issue and update via `setLineChannelAccessToken(...)`.
+- **LINE 400 Bad Request**: Invalid target ID or bot is not a member of the group/friend list.
+- **LINE silent failure**: Free tier 1,000 monthly push message limit might be exhausted.
+
+---
+
+## 📁 Repository Structure
 
 ```
 .
-├── Code.js              # メインスクリプト
-├── appsscript.json      # GAS マニフェスト
-├── docs/                # システム構成・可視化ドキュメント
-│   ├── architecture.html # インタラクティブ構成図
-│   ├── architecture.json # アーキテクチャ定義仕様
-│   └── architecture.png  # アーキテクチャ図キャプチャ
-└── .gitignore           # .clasp.json など除外
+├── Code.js              # Main GAS application script
+├── appsscript.json      # Google Apps Script manifest
+├── README.md            # English documentation
+├── README.ja.md         # Japanese documentation
+├── docs/                # Architecture and visualization assets
+│   ├── index.html       # GitHub Pages live root
+│   ├── architecture.html# Interactive architecture diagram
+│   ├── architecture.json# Archify specification schema
+│   └── architecture.png # Static diagram capture
+└── .gitignore           # Git ignore rules (.clasp.json, etc.)
 ```
-
-> **注意**: `.clasp.json`（scriptId を含む）は `.gitignore` で除外しています。
-> 新しい環境で作業する場合は `clasp clone <scriptId>` で再取得してください。
