@@ -464,3 +464,48 @@ function safeParseDate(s) {
   if (isNaN(d.getTime())) return new Date(0);
   return d;
 }
+
+// ===== 設定検証ユーティリティ =====
+/**
+ * 現在のセットアップ状態を検証し、結果を返します。
+ * 家族が「なぜ通知が届かないのか」を診断するのに便利です。
+ *
+ * @returns {{ready: boolean, warnings: string[], config: object}}
+ */
+function validateSetup() {
+  const warnings = [];
+  const config = {};
+
+  // フィードURL
+  const feedUrls = getFeedUrls();
+  config.feedUrls = feedUrls;
+  if (!feedUrls.length) {
+    warnings.push("フィードURLが未設定です。setFeedUrls([...]) を実行してください。");
+  }
+
+  // Discord
+  const discordUrl = getScriptProperties().getProperty(PROPERTY_WEBHOOK_URL);
+  config.discordConfigured = !!discordUrl;
+  const lineToken = getScriptProperties().getProperty(PROPERTY_LINE_CHANNEL_ACCESS_TOKEN);
+  const lineTarget = getScriptProperties().getProperty(PROPERTY_LINE_TARGET_ID);
+  config.lineConfigured = !!(lineToken && lineTarget);
+
+  if (!config.discordConfigured && !config.lineConfigured) {
+    warnings.push("通知先が未設定です。Discord または LINE のいずれかを設定してください。");
+  }
+
+  // 既読状態
+  const hasSeenState = feedUrls.some(url => {
+    return !!getScriptProperties().getProperty(PROPERTY_LAST_SEEN_PREFIX + url);
+  });
+  config.hasReadState = hasSeenState;
+  if (feedUrls.length > 0 && !hasSeenState) {
+    warnings.push("既読状態がありません。markCurrentAsRead() を実行すると、既存記事の通知をスキップできます。");
+  }
+
+  return {
+    ready: warnings.length === 0,
+    warnings: warnings,
+    config: config,
+  };
+}
