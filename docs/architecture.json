@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "RSS Notifier System Architecture",
+    "output": "docs/architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1360, 720],
+    "views": [
+      {
+        "id": "full-flow",
+        "label": "Entire Polling & Notification Flow",
+        "focus": ["scheduler", "gas_engine", "rss_sources", "parser", "props", "discord_api", "line_api", "discord_channel", "line_recipients"],
+        "note": "Periodic 15-minute polling from Google Apps Script to Discord & LINE."
+      },
+      {
+        "id": "gas-internal",
+        "label": "GAS Core Processing & State Store",
+        "focus": ["gas_engine", "parser", "props"],
+        "note": "Feed fetching, XML parsing, deduplication, and Script Properties state tracking."
+      },
+      {
+        "id": "dispatchers",
+        "label": "Notification Gateways & Delivery",
+        "focus": ["parser", "discord_api", "line_api", "discord_channel", "line_recipients"],
+        "note": "Multi-channel dispatch: Discord Embeds with rate limiting and LINE Push with chunking."
+      }
+    ]
+  },
+  "components": [
+    { "id": "clasp_dev", "type": "external", "label": "Developer / clasp", "sublabel": "Setup & Push", "pos": [50, 160], "size": [140, 64], "tag": "CLI & Script App" },
+    { "id": "scheduler", "type": "cloud", "label": "Time Trigger", "sublabel": "ScriptApp :15m", "pos": [50, 340], "size": [140, 64], "tag": "Cron Trigger" },
+    { "id": "rss_sources", "type": "external", "label": "RSS / Atom Feeds", "sublabel": "Web Blogs & Media", "pos": [50, 520], "size": [140, 64], "tag": "HTTP XML" },
+
+    { "id": "props", "type": "database", "label": "Script Properties", "sublabel": "PropertiesService", "pos": [330, 160], "size": [160, 64], "tag": "State & Tokens" },
+    { "id": "gas_engine", "type": "backend", "label": "GAS Notifier Engine", "sublabel": "Code.js / checkFeeds()", "pos": [330, 340], "size": [170, 64], "tag": "GAS Runtime" },
+    { "id": "parser", "type": "backend", "label": "Feed Parser & Filter", "sublabel": "XmlService / Dedup", "pos": [610, 340], "size": [170, 64], "tag": "Max 5 Items" },
+
+    { "id": "discord_api", "type": "external", "brand": "discord", "label": "Discord Webhook", "sublabel": "api/webhooks", "pos": [890, 250], "size": [160, 64], "tag": "Embed :1s Sleep" },
+    { "id": "line_api", "type": "external", "label": "LINE Messaging API", "sublabel": "api.line.me (Push)", "pos": [890, 430], "size": [160, 64], "tag": "Chunk & 429 Retry" },
+
+    { "id": "discord_channel", "type": "frontend", "label": "Discord Channel", "sublabel": "Server Members", "pos": [1160, 250], "size": [150, 64], "tag": "Rich Embeds" },
+    { "id": "line_recipients", "type": "frontend", "label": "LINE Users & Groups", "sublabel": "Friends / Talkrooms", "pos": [1160, 430], "size": [150, 64], "tag": "Push Messages" }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Google Apps Script Environment", "wraps": ["props", "gas_engine", "parser"], "pad": 22 },
+    { "kind": "security-group", "label": "External Gateways", "wraps": ["discord_api", "line_api"], "pad": 18 },
+    { "kind": "region", "label": "Subscriber Endpoints", "wraps": ["discord_channel", "line_recipients"], "pad": 18 }
+  ],
+  "connections": [
+    { "id": "dev-setup", "from": "clasp_dev", "to": "props", "label": "set config", "variant": "emphasis" },
+    { "id": "sched-trigger", "from": "scheduler", "to": "gas_engine", "label": "trigger :15m", "variant": "emphasis" },
+    { "id": "gas-props-read", "from": "gas_engine", "to": "props", "label": "get config", "fromSide": "top", "toSide": "bottom" },
+    { "id": "fetch-feeds", "from": "gas_engine", "to": "rss_sources", "label": "UrlFetchApp", "fromSide": "bottom", "toSide": "right" },
+    { "id": "parse-stream", "from": "gas_engine", "to": "parser", "label": "parse & filter", "variant": "emphasis" },
+    { "id": "parser-props-save", "from": "parser", "to": "props", "label": "save lastSeen", "fromSide": "top", "toSide": "right" },
+    { "id": "notify-discord", "from": "parser", "to": "discord_api", "label": "POST embed", "variant": "emphasis" },
+    { "id": "notify-line", "from": "parser", "to": "line_api", "label": "POST push", "variant": "emphasis" },
+    { "id": "discord-deliver", "from": "discord_api", "to": "discord_channel", "label": "deliver", "variant": "emphasis" },
+    { "id": "line-deliver", "from": "line_api", "to": "line_recipients", "label": "deliver", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Trigger & Ingestion",
+      "items": [
+        "15分ごとの時間主導トリガーで checkFeeds() が自動実行",
+        "UrlFetchApp で複数の RSS 2.0 / Atom 1.0 フィードを取得",
+        "XmlService で XML を構文解析し記事タイトル・リンク・日時を抽出"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "State & Rate Limiting",
+      "items": [
+        "Script Properties で各フィードの最終通知日時 (lastSeen) を永続管理",
+        "1回の実行あたり最大5件 (MAX_NOTIFICATIONS_PER_RUN) に通知を制限",
+        "Discord は 1 秒間隔、LINE は 429 レート制限リトライ・自動チャンク分割"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Multi-Platform Dispatch",
+      "items": [
+        "Discord Webhook によるリッチ Embed 通知（個別 ON/OFF 可能）",
+        "LINE Messaging API による Push メッセージ配信（グループ対応）",
+        "両方への同時通知、または片方のみの利用に柔軟対応"
+      ]
+    }
+  ]
+}

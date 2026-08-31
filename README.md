@@ -10,6 +10,13 @@ RSS/Atom フィードの更新を検出して Discord および LINE に通知�
 - 1 回の実行あたりの通知件数を制限（スパム防止）
 - 既読管理を Script Properties に保存（再起動後も状態を維持）
 
+## システム構成
+
+[![システムアーキテクチャ図](docs/architecture.png)](docs/architecture.html)
+
+> 🔗 **インタラクティブ構成図**: [`docs/architecture.html`](docs/architecture.html)
+> ブラウザで開くことで、ライト/ダークテーマ切替、ガイド付きステップビュー（全体フロー / GAS内部処理 / 通知ゲートウェイ）、各ノードのハイライトや依存関係の追跡が可能です。
+
 ## セットアップ
 
 ### 1. clasp でプッシュ
@@ -113,9 +120,13 @@ createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
 
 ```
 .
-├── Code.js           # メインスクリプト
-├── appsscript.json   # GAS マニフェスト
-└── .gitignore        # .clasp.json など除外
+├── Code.js              # メインスクリプト
+├── appsscript.json      # GAS マニフェスト
+├── docs/                # システム構成・可視化ドキュメント
+│   ├── architecture.html # インタラクティブ構成図
+│   ├── architecture.json # アーキテクチャ定義仕様
+│   └── architecture.png  # アーキテクチャ図キャプチャ
+└── .gitignore           # .clasp.json など除外
 ```
 
 > **注意**: `.clasp.json`（scriptId を含む）は `.gitignore` で除外しています。
