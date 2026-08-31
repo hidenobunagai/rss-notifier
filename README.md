@@ -12,9 +12,9 @@ RSS/Atom フィードの更新を検出して Discord および LINE に通知�
 
 ## システム構成
 
-[![システムアーキテクチャ図](docs/architecture.png)](docs/architecture.html)
+[![システムアーキテクチャ図](docs/architecture.png)](https://hidenobunagai.github.io/rss-notifier/)
 
-> 🔗 **インタラクティブ構成図**: [`docs/architecture.html`](docs/architecture.html)
+> 🔗 **インタラクティブ構成図（Live Preview）**: [https://hidenobunagai.github.io/rss-notifier/](https://hidenobunagai.github.io/rss-notifier/)
 > ブラウザで開くことで、ライト/ダークテーマ切替、ガイド付きステップビュー（全体フロー / GAS内部処理 / 通知ゲートウェイ）、各ノードのハイライトや依存関係の追跡が可能です。
 
 ## セットアップ
