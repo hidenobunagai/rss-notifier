@@ -7,3 +7,8 @@
 # エディタ
 .vscode/
 *.swp
+
+# env files: real values are never committed (dotenvx-encrypted files are added explicitly)
+.env
+.env.*
+!.env.example
