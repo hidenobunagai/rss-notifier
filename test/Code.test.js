@@ -73,6 +73,61 @@ describe("normalizeLineMessage", () => {
   });
 });
 
+describe("buildDiscordPayload", () => {
+  test("300 字の title は 256 字（255 字 + …）に丸める", () => {
+    const { api } = loadGas();
+    const payload = api.buildDiscordPayload({ title: "あ".repeat(300), link: "", date: new Date(0) }, FEED);
+    const title = payload.embeds[0].title;
+    expect(title.length).toBe(256); // Discord の embed title 上限
+    expect(title).toBe("あ".repeat(255) + "…");
+  });
+
+  test("上限以内の title はそのまま", () => {
+    const { api } = loadGas();
+    const payload = api.buildDiscordPayload({ title: "短いタイトル", link: "", date: new Date(0) }, FEED);
+    expect(payload.embeds[0].title).toBe("短いタイトル");
+  });
+
+  test("相対リンクには url を付けない（Discord が 400 にするため）", () => {
+    const { api } = loadGas();
+    for (const link of ["/blog/relative", "../post/1", "example.com/x", ""]) {
+      const embed = api.buildDiscordPayload({ title: "t", link, date: new Date(0) }, FEED).embeds[0];
+      expect("url" in embed).toBe(false);
+    }
+  });
+
+  test("絶対 http(s) URL は url に入り、2048 字超は落とす", () => {
+    const { api } = loadGas();
+    const ok = api.buildDiscordPayload({ title: "t", link: "https://example.com/1", date: new Date(0) }, FEED);
+    expect(ok.embeds[0].url).toBe("https://example.com/1");
+    expect(ok.embeds[0].footer.text).toBe(FEED);
+    expect(ok.username).toBe("RSS Notifier");
+    expect(ok.allowed_mentions).toEqual({ parse: [] });
+
+    const tooLong = "https://example.com/" + "a".repeat(2048);
+    expect("url" in api.buildDiscordPayload({ title: "t", link: tooLong, date: new Date(0) }, FEED).embeds[0]).toBe(false);
+  });
+
+  test("日時が無い記事には timestamp を付けない", () => {
+    const { api } = loadGas();
+    const embed = api.buildDiscordPayload({ title: "t", link: "", date: new Date(0) }, FEED).embeds[0];
+    expect("timestamp" in embed).toBe(false);
+  });
+
+  test("processFeed 経由でも上限内の payload が送られる", () => {
+    const captured = [];
+    const root = rss([
+      { title: "あ".repeat(300), link: "/blog/relative", guid: "long1", pubDate: "Tue, 15 Sep 2026 09:00:00 GMT" },
+    ]);
+    const { api } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
+    api.processFeed(FEED);
+
+    const embed = JSON.parse(captured.find((c) => c.url === WEBHOOK).params.payload).embeds[0];
+    expect(embed.title.length).toBe(256);
+    expect("url" in embed).toBe(false);
+  });
+});
+
 describe("postToLineInChunks", () => {
   test("5000 字を超えるメッセージはチャンク分割され、各 push は 5 件以内", () => {
     const captured = [];

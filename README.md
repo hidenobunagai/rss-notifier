@@ -175,8 +175,8 @@ clasp status   # Tracked files: appsscript.json, Code.js
 When you add a GAS file, add a matching `!` line to `.claspignore`; if you forget, it
 shows up under "Untracked files" in `clasp status`.
 
-Pure functions (`safeParseDate`, `normalizeLineMessage`, chunking, item selection) are
-covered by a small harness that loads `Code.js` with stubbed GAS globals:
+Pure functions (`safeParseDate`, `normalizeLineMessage`, `buildDiscordPayload`, chunking, item
+selection) are covered by a small harness that loads `Code.js` with stubbed GAS globals:
 
 ```bash
 bun test

@@ -25,6 +25,9 @@ const PROPERTY_FEED_URLS = "feedUrls"; // JSON 配列で保存
 const MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（スパム対策）
 const DISCORD_USERNAME = "RSS Notifier";
 const DISCORD_EMBED_COLOR = 3447003; // #3498DB (青)
+// Discord の embed 上限。超えると 400 で記事ごと落ちる（既読は進むので恒久取りこぼしになる）
+const DISCORD_EMBED_TITLE_LIMIT = 256; // title の文字数上限
+const DISCORD_EMBED_URL_LIMIT = 2048; // url の文字数上限
 const NOTIFY_INTERVAL_MS = 1000; // Discord レート制限対策: 投稿間隔 (ms)
 // LINE Messaging API 関連 (LINE Notify は 2025/3 廃止のため非採用)
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
@@ -349,21 +352,35 @@ function parseAtom(root) {
 }
 
 // ===== Discord 通知 =====
-function notifyDiscord(item, feedUrl, webhook) {
+
+/**
+ * Discord Webhook に送る payload を組み立てる（純関数）
+ * Discord は上限超過や不正な url を 400 で拒否し、記事が丸ごと届かなくなるため、
+ * 送信前に title を丸め（丸めは LINE と同じ normalizeLineMessage を再利用）、
+ * url は絶対 http(s) URL のときだけ入れる。
+ */
+function buildDiscordPayload(item, feedUrl) {
   const hasTimestamp = item.date && item.date.getTime() !== 0;
-  const payload = {
+  // 相対パス（例: Atom の <link href="/blog/x">）は Discord が 400 にするので付けない
+  const link = item.link || "";
+  const hasUrl = /^https?:\/\//.test(link) && link.length <= DISCORD_EMBED_URL_LIMIT;
+  return {
     username: DISCORD_USERNAME,
     allowed_mentions: { parse: [] },
     embeds: [
       {
-        title: item.title || "(タイトルなし)",
-        ...(item.link ? { url: item.link } : {}),
+        title: normalizeLineMessage(item.title || "(タイトルなし)", DISCORD_EMBED_TITLE_LIMIT),
+        ...(hasUrl ? { url: link } : {}),
         color: DISCORD_EMBED_COLOR,
         footer: { text: feedUrl },
         ...(hasTimestamp ? { timestamp: item.date.toISOString() } : {}),
       },
     ],
   };
+}
+
+function notifyDiscord(item, feedUrl, webhook) {
+  const payload = buildDiscordPayload(item, feedUrl);
   const res = UrlFetchApp.fetch(webhook, {
     method: "post",
     contentType: "application/json",

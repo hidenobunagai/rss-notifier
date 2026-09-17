@@ -152,7 +152,7 @@ clasp status   # Tracked files: appsscript.json, Code.js
 GAS 側にファイルを足すときは `.claspignore` に `!` の行を足してください
 （足し忘れても `clasp status` の "Untracked files" に出るので気づけます）。
 
-純関数（`safeParseDate` / `normalizeLineMessage` / チャンク分割 / 記事の選別）は、
+純関数（`safeParseDate` / `normalizeLineMessage` / `buildDiscordPayload` / チャンク分割 / 記事の選別）は、
 GAS グローバルをスタブして `Code.js` を読み込む小さなハーネスで検証しています:
 
 ```bash
