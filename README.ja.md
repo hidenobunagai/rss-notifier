@@ -124,6 +124,7 @@ createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
 .
 ├── Code.js              # メインスクリプト
 ├── appsscript.json      # GAS マニフェスト
+├── LICENSE              # MIT ライセンス
 ├── docs/                # システム構成・可視化ドキュメント
 │   ├── architecture.html # インタラクティブ構成図
 │   ├── architecture.json # アーキテクチャ定義仕様

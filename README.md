@@ -149,6 +149,7 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 ├── appsscript.json      # Google Apps Script manifest
 ├── README.md            # English documentation
 ├── README.ja.md         # Japanese documentation
+├── LICENSE              # MIT license
 ├── docs/                # Architecture and visualization assets
 │   ├── index.html       # GitHub Pages live root
 │   ├── architecture.html# Interactive architecture diagram
