@@ -134,6 +134,7 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 ## 🔍 Troubleshooting
 
 - **No notifications sent**: Ensure `discordWebhookUrl` or both `lineChannelAccessToken` + `lineTargetId` are configured. Run `validateSetup()` to diagnose.
+- **Notification arrives on one channel only**: Read state (`seenIds:<feedUrl>`) is tracked per feed, not per channel. With both Discord and LINE enabled, an article that fails on one channel is still marked as read as soon as the other channel succeeds, so the failed channel never receives it. (Per-channel read state would deliver a burst of backlogged articles the moment an expired token is fixed, which is why it is per feed.) Enable only one channel if you need to avoid this.
 - **Discord 429**: Rate-limited by Discord. Check `NOTIFY_INTERVAL_MS` or reduce execution frequency.
 - **LINE 401 Unauthorized**: Token is invalid or expired. Re-issue and update via `setLineChannelAccessToken(...)`.
 - **LINE 400 Bad Request**: Invalid target ID or bot is not a member of the group/friend list.
