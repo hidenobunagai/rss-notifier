@@ -1,7 +1,7 @@
 // Code.js（GAS）の純関数と選別ロジックのテスト。
 // GAS API はガスハーネスが差し替えるので、bun test からそのまま呼べる。
 import { describe, expect, test } from "bun:test";
-import { loadGas, okFetch, rss } from "./gas-harness.js";
+import { el, loadGas, okFetch, rss } from "./gas-harness.js";
 
 const FEED = "https://example.com/feed";
 const WEBHOOK = "https://discord.com/api/webhooks/1/token";
@@ -90,11 +90,10 @@ describe("postToLineInChunks", () => {
   });
 });
 
-// 以下は 2026-09-16 時点の既知の挙動を固定する特性テスト（backlog の「既読が日時 1 個の
-// ウォーターマークなので 3 経路で記事が静かに消える」の実測 3 ケース）。ID ベースの既読に
-// 変えるときは、この 3 本を意図的に書き換える（＝挙動変更に気づける）。
-describe("processFeed: 既知の取りこぼし（特性テスト）", () => {
-  const itemsOf = (n) =>
+// 2026-09-16 に実測した取りこぼし 3 経路（日時ウォーターマークが原因）を、
+// ID ベースの既読に直した後の期待挙動として固定する。
+describe("processFeed: ID ベースの既読", () => {
+  const rawItems = (n) =>
     Array.from({ length: n }, (_, i) => ({
       title: `A${i + 1}`,
       link: `${FEED}/${i + 1}`,
@@ -102,65 +101,169 @@ describe("processFeed: 既知の取りこぼし（特性テスト）", () => {
       pubDate: `Tue, ${String(i + 1).padStart(2, "0")} Sep 2026 00:00:00 GMT`,
     }));
 
-  test("① 一度に上限 5 件を超える新着が来ると、古い側は未通知のまま既読が進む", () => {
+  test("① 上限 5 件を超える新着は、次回の実行で残りが通知される（取りこぼし無し）", () => {
     const captured = [];
-    const root = rss(itemsOf(10));
+    const root = rss(rawItems(10));
     const { api, get } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
 
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual(["A6", "A7", "A8", "A9", "A10"]);
-    // 既読は送信できた最新（A10）まで進む
-    expect(get("lastSeen:" + FEED)).toBe("2026-09-10T00:00:00.000Z");
+    const first = sentTitles(captured);
+    expect(first.length).toBe(5);
 
     captured.length = 0;
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual([]); // A1〜A5 は二度と選ばれない
+    const second = sentTitles(captured);
+    expect(second.length).toBe(5);
+
+    // 10 件すべてが 1 回ずつ通知される（順序はスパム上限の切り方に依存するので問わない）
+    const all = [...first, ...second];
+    expect(new Set(all).size).toBe(10);
+    expect(all.slice().sort()).toEqual(rawItems(10).map((it) => it.title).sort());
+
+    // 既読 ID も 10 件分が保存される
+    expect(JSON.parse(get("seenIds:" + FEED)).sort()).toEqual(rawItems(10).map((it) => it.guid).sort());
   });
 
-  test("② pubDate が無いフィードは初回で lastSeen=1970-01-01 になり恒久沈黙する", () => {
+  test("② pubDate が無いフィードでも、新しい記事が届けば通知される", () => {
     const captured = [];
-    const root = rss([
+    const items = [
       { title: "B1", link: `${FEED}/b1` },
       { title: "B2", link: `${FEED}/b2` },
       { title: "B3", link: `${FEED}/b3` },
-    ]);
-    const { api, get } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
+    ];
+    const { api } = loadGas({
+      properties: DISCORD_SETUP,
+      fetch: okFetch(captured),
+      root: () => rss(items),
+    });
 
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual(["B1", "B2", "B3"]);
-    expect(get("lastSeen:" + FEED)).toBe("1970-01-01T00:00:00.000Z");
 
+    items.push({ title: "B4", link: `${FEED}/b4` });
     captured.length = 0;
-    api.processFeed(FEED); // B4 を足しても（同じく日付なし）0 件
-    expect(sentTitles(captured)).toEqual([]);
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(["B4"]); // 日時が 1970 でも ID なら新着と判定できる
   });
 
-  test("③ 同日時の記事は 1 件失敗しても、成功した後続の日時で既読が進む", () => {
+  test("③ 同日時の記事が 1 件失敗しても、次回の実行でリトライされる", () => {
     const captured = [];
+    let attempts = [];
+    let failC2 = true;
     const sameDate = "Tue, 15 Sep 2026 09:00:00 GMT";
-    const root = rss(["C1", "C2", "C3", "C4"].map((t) => ({ title: t, link: `${FEED}/${t}`, pubDate: sameDate })));
+    const root = rss(
+      ["C1", "C2", "C3", "C4"].map((t) => ({ title: t, link: `${FEED}/${t}`, pubDate: sameDate })),
+    );
     const fetch = (url, params) => {
       const title = params?.payload ? JSON.parse(params.payload).embeds[0].title : null;
-      const code = title === "C2" ? 500 : 200; // C2 の投稿だけ失敗させる
+      if (title) attempts.push(title);
+      const code = title === "C2" && failC2 ? 500 : 200;
       if (code < 400) captured.push({ url, params }); // 成功した送信だけを記録する
       return { getResponseCode: () => code, getContentText: () => "", getHeaders: () => ({}) };
     };
-    const { api, get } = loadGas({ properties: DISCORD_SETUP, fetch, root });
+    const { api } = loadGas({ properties: DISCORD_SETUP, fetch, root });
 
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual(["C1", "C3", "C4"]);
-    expect(get("lastSeen:" + FEED)).toBe(new Date(sameDate).toISOString());
+    expect(sentTitles(captured)).toEqual(["C1", "C3", "C4"]); // C2 だけ失敗
+
+    failC2 = false;
+    captured.length = 0;
+    attempts = [];
+    api.processFeed(FEED);
+    expect(attempts).toEqual(["C2"]); // 失敗した C2 だけが再送される
+    expect(sentTitles(captured)).toEqual(["C2"]);
+  });
+
+  test("同じ記事は 2 度通知されない（通常経路）", () => {
+    const captured = [];
+    const root = rss(rawItems(3));
+    const { api, get } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(["A1", "A2", "A3"]);
+    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(["a1", "a2", "a3"]);
 
     captured.length = 0;
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual([]); // C2 は永久に届かない
+    expect(sentTitles(captured)).toEqual([]);
   });
 
-  test("lastSeen より新しい記事だけが選別される（通常経路）", () => {
+  test("移行: lastSeen だけがあるインストールは既存記事を再通知せず、以降の新着は通知する", () => {
     const captured = [];
-    const root = rss(itemsOf(3));
-    const { api } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
+    const items = rawItems(3);
+    const { api, get } = loadGas({
+      properties: { ...DISCORD_SETUP, ["lastSeen:" + FEED]: "2026-09-03T00:00:00.000Z" },
+      fetch: okFetch(captured),
+      root: () => rss(items),
+    });
+
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual(["A1", "A2", "A3"]);
+    expect(sentTitles(captured)).toEqual([]); // lastSeen 以前の記事は既読として引き継がれる
+    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(["a1", "a2", "a3"]);
+
+    items.push({ title: "A4", link: `${FEED}/4`, guid: "a4", pubDate: "Fri, 04 Sep 2026 00:00:00 GMT" });
+    captured.length = 0;
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(["A4"]);
   });
 });
+
+describe("parseAtom の ID", () => {
+  const entry = (title, id, href) =>
+    el("entry", "", [
+      el("title", title),
+      el("id", id),
+      el("link", "", [], { rel: "alternate", href }),
+    ]);
+
+  test("<id> が空文字なら link / title にフォールバックする（ID が衝突しない）", () => {
+    const root = el("feed", "", [
+      entry("T1", "", "https://example.com/1"),
+      entry("T2", "", "https://example.com/2"),
+    ]);
+    const { api } = loadGas({ root, fetch: okFetch() });
+    expect(api.fetchFeedItems(FEED).map((it) => it.id)).toEqual([
+      "https://example.com/1",
+      "https://example.com/2",
+    ]);
+  });
+});
+
+describe("parseSeenIds / selectNewItems / mergeSeenIds", () => {
+  test("parseSeenIds は壊れた値・非配列を空配列として扱う", () => {
+    const { api } = loadGas();
+    expect(api.parseSeenIds('["a","b"]')).toEqual(["a", "b"]);
+    expect(api.parseSeenIds("{壊れた JSON")).toEqual([]);
+    expect(api.parseSeenIds("")).toEqual([]);
+    expect(api.parseSeenIds(null)).toEqual([]);
+  });
+
+  test("selectNewItems は既読 ID の記事を除く", () => {
+    const { api } = loadGas();
+    const items = [{ id: "x" }, { id: "y" }, { id: "z" }];
+    expect(api.selectNewItems(items, ["y"]).map((it) => it.id)).toEqual(["x", "z"]);
+    expect(api.selectNewItems(items, []).length).toBe(3);
+    expect(api.selectNewItems(items, ["x", "y", "z"])).toEqual([]);
+  });
+
+  test("mergeSeenIds は重複を畳み込み、直近 50 件に切り詰める", () => {
+    const { api } = loadGas();
+    expect(api.mergeSeenIds(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"]);
+
+    const sixty = Array.from({ length: 60 }, (_, i) => `id${i}`);
+    const merged = api.mergeSeenIds([], sixty);
+    expect(merged.length).toBe(50); // Script Properties の 1 値あたりのサイズ上限に対する余裕
+    expect(merged[0]).toBe("id10");
+    expect(merged[49]).toBe("id59");
+  });
+
+  test("mergeSeenIds は長い ID でも JSON を保存上限内に収める（新しい方を残す）", () => {
+    const { api } = loadGas();
+    // 1 件 300 字超 × 50 件 = 16KB 超。Script Properties の 1 値 9KB 制限に収める必要がある
+    const longIds = Array.from({ length: 50 }, (_, i) => `https://example.com/${i}/` + "a".repeat(300));
+    const merged = api.mergeSeenIds([], longIds);
+    expect(JSON.stringify(merged).length).toBeLessThanOrEqual(6000);
+    expect(merged[merged.length - 1]).toBe(longIds[49]);
+    expect(merged.length).toBeGreaterThan(0);
+  });
+});
+

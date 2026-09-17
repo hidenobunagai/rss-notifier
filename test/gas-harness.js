@@ -12,9 +12,16 @@ const EXPORTS = [
   "safeParseDate",
   "normalizeLineMessage",
   "postToLineInChunks",
+  "parseSeenIds",
+  "selectNewItems",
+  "mergeSeenIds",
 ];
 
-/** GAS のグローバルを素のオブジェクトで差し替えて Code.js を読み込む */
+/**
+ * GAS のグローバルを素のオブジェクトで差し替えて Code.js を読み込む。
+ * `root` に関数を渡すと、fetch のたびにその戻り値を XML ツリーとして使う
+ * （テスト中でフィードに記事を足すため）。
+ */
 export function loadGas({ properties = {}, fetch, root, log } = {}) {
   const store = new Map(Object.entries(properties));
   const noFetch = () => {
@@ -34,7 +41,7 @@ export function loadGas({ properties = {}, fetch, root, log } = {}) {
     Session: { getScriptTimeZone: () => "Asia/Tokyo" },
     XmlService: {
       // 実際の XML 解析はせず、テストが組み立てた要素ツリーをそのまま返す
-      parse: () => ({ getRootElement: () => root }),
+      parse: () => ({ getRootElement: () => (typeof root === "function" ? root() : root) }),
       getNamespace: (uri) => ({ uri }),
     },
   };

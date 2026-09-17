@@ -15,7 +15,12 @@
 const PROPERTY_WEBHOOK_URL = "discordWebhookUrl";
 const PROPERTY_LINE_CHANNEL_ACCESS_TOKEN = "lineChannelAccessToken";
 const PROPERTY_LINE_TARGET_ID = "lineTargetId";
-const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列
+const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列（初回移行と診断用に保持。記事選別には不使用）
+const PROPERTY_SEEN_IDS_PREFIX = "seenIds:"; // seenIds:<feedUrl> = 通知済み記事 ID の JSON 配列
+const MAX_SEEN_IDS = 50; // seenIds に残す件数上限
+// Script Properties は 1 値あたり 9KB まで。長い URL のフィードでも保存が失敗しないよう
+// 件数だけでなく JSON 文字列の長さでも切る（保存に失敗すると毎回同じ記事を再通知し続ける）
+const MAX_SEEN_IDS_JSON_LENGTH = 6000;
 const PROPERTY_FEED_URLS = "feedUrls"; // JSON 配列で保存
 const MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（スパム対策）
 const DISCORD_USERNAME = "RSS Notifier";
@@ -74,19 +79,115 @@ function markCurrentAsRead() {
     Logger.log("feedUrls が未設定です。setFeedUrls([...]) を先に実行してください。");
     return;
   }
+  const props = getScriptProperties();
   for (const url of feedUrls) {
     try {
       const items = fetchFeedItems(url);
       if (!items || !items.length) continue;
       items.sort((a, b) => a.date - b.date);
+      const ids = mergeSeenIds(
+        [],
+        items.map((it) => it.id),
+      );
+      if (ids.length > 0) {
+        props.setProperty(PROPERTY_SEEN_IDS_PREFIX + url, JSON.stringify(ids));
+      }
       const latest = items[items.length - 1].date;
       if (latest && latest.getTime && !isNaN(latest.getTime())) {
-        getScriptProperties().setProperty(PROPERTY_LAST_SEEN_PREFIX + url, latest.toISOString());
+        props.setProperty(PROPERTY_LAST_SEEN_PREFIX + url, latest.toISOString());
       }
     } catch (e) {
       Logger.log("markCurrentAsRead error: " + (e && e.stack ? e.stack : e));
     }
   }
+}
+
+// ===== 既読管理 (ID ベース) =====
+
+/**
+ * 保存された既読 ID の JSON 文字列を解析し、文字列の配列のみを返す
+ * @param {string|null} raw
+ * @returns {string[]}
+ */
+function parseSeenIds(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      Logger.log("seenIds の値が配列ではありません: " + raw);
+      return [];
+    }
+    return parsed.filter((id) => typeof id === "string");
+  } catch (e) {
+    Logger.log("seenIds の解析に失敗しました: " + e);
+    return [];
+  }
+}
+
+/**
+ * 既読 ID に含まれない新着記事のみを抽出する
+ * @param {Array<{id: string, [key: string]: any}>} items
+ * @param {string[]} seenIds
+ * @returns {Array<{id: string, [key: string]: any}>}
+ */
+function selectNewItems(items, seenIds) {
+  return items.filter((it) => !seenIds.includes(it.id));
+}
+
+/**
+ * 既読 ID に今回通知した ID をマージし、保存上限まで切り詰める（新しい方を残す）
+ * @param {string[]} seenIds
+ * @param {string[]} notifiedIds
+ * @returns {string[]}
+ */
+function mergeSeenIds(seenIds, notifiedIds) {
+  const filtered = seenIds.filter((id) => !notifiedIds.includes(id));
+  const merged = filtered.concat(notifiedIds).slice(-MAX_SEEN_IDS);
+  while (merged.length > 1 && JSON.stringify(merged).length > MAX_SEEN_IDS_JSON_LENGTH) {
+    merged.shift(); // 長い ID のフィードでは古い方から落とす
+  }
+  return merged;
+}
+
+/**
+ * 過去の日時ウォーターマーク (lastSeen) から既読 ID 配列へ移行する。
+ * 移行元の記事が保存上限より多い場合、あふれた古い記事は次回以降に未読として
+ * 扱われる（1 回だけの再通知。フィードの保持件数は通常これを下回る）
+ * @param {Array<{id: string, date: Date, [key: string]: any}>} items
+ * @param {Date|null} lastSeenDate
+ * @returns {string[]}
+ */
+function migrateSeenIds(items, lastSeenDate) {
+  if (!lastSeenDate || isNaN(lastSeenDate.getTime())) {
+    return [];
+  }
+  return mergeSeenIds(
+    [],
+    items.filter((it) => it.date <= lastSeenDate).map((it) => it.id),
+  );
+}
+
+/**
+ * 既読 ID 一覧を取得する（未設定時は lastSeen からの初回移行を行う）
+ * @param {GoogleAppsScript.Properties.Properties} props
+ * @param {string} feedUrl
+ * @param {Array<{id: string, date: Date, [key: string]: any}>} items
+ * @returns {string[]}
+ */
+function loadSeenIds(props, feedUrl, items) {
+  const stored = props.getProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl);
+  if (stored !== null) {
+    return parseSeenIds(stored);
+  }
+
+  // 過去の日時ウォーターマークからの初回移行
+  const lastSeenIso = props.getProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl) || "";
+  const lastSeenDate = lastSeenIso ? new Date(lastSeenIso) : null;
+  const migrated = migrateSeenIds(items, lastSeenDate);
+  if (migrated.length > 0) {
+    props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(migrated));
+  }
+  return migrated;
 }
 
 // ===== 実装本体 =====
@@ -99,10 +200,9 @@ function processFeed(feedUrl) {
   // 古い→新しい順に並べ替え
   items.sort((a, b) => a.date - b.date);
 
-  const lastSeenIso = getScriptProperties().getProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl) || "";
-  const lastSeenDate = lastSeenIso ? new Date(lastSeenIso) : null;
-
-  let newItems = items.filter((it) => !lastSeenDate || it.date > lastSeenDate);
+  const props = getScriptProperties();
+  const seenIds = loadSeenIds(props, feedUrl, items);
+  let newItems = selectNewItems(items, seenIds);
   if (!newItems.length) {
     return; // 更新なし
   }
@@ -112,11 +212,9 @@ function processFeed(feedUrl) {
     newItems = newItems.slice(newItems.length - MAX_NOTIFICATIONS_PER_RUN);
   }
 
-  const webhook = (getScriptProperties().getProperty(PROPERTY_WEBHOOK_URL) || "").trim();
-  const lineToken = (
-    getScriptProperties().getProperty(PROPERTY_LINE_CHANNEL_ACCESS_TOKEN) || ""
-  ).trim();
-  const lineTargetId = (getScriptProperties().getProperty(PROPERTY_LINE_TARGET_ID) || "").trim();
+  const webhook = (props.getProperty(PROPERTY_WEBHOOK_URL) || "").trim();
+  const lineToken = (props.getProperty(PROPERTY_LINE_CHANNEL_ACCESS_TOKEN) || "").trim();
+  const lineTargetId = (props.getProperty(PROPERTY_LINE_TARGET_ID) || "").trim();
   const hasDiscord = !!webhook;
   const hasLine = !!lineToken && !!lineTargetId;
 
@@ -128,6 +226,7 @@ function processFeed(feedUrl) {
 
   // ----- Discord 送信 (embed 形式で 1 記事ずつ投稿) -----
   let lastSuccessDate = null;
+  const notifiedIds = [];
   if (hasDiscord) {
     for (let i = 0; i < newItems.length; i++) {
       if (i > 0) Utilities.sleep(NOTIFY_INTERVAL_MS);
@@ -135,6 +234,7 @@ function processFeed(feedUrl) {
       try {
         notifyDiscord(item, feedUrl, webhook);
         lastSuccessDate = item.date;
+        notifiedIds.push(item.id);
       } catch (e) {
         // 個別投稿エラーはログのみに留め、後続を続行
         Logger.log("Notify error (Discord): " + (e && e.stack ? e.stack : e));
@@ -151,14 +251,21 @@ function processFeed(feedUrl) {
       if (!hasDiscord) {
         lastSuccessDate = newItems[newItems.length - 1].date;
       }
+      for (const item of newItems) {
+        notifiedIds.push(item.id);
+      }
     } catch (e) {
       Logger.log("Notify error (LINE): " + (e && e.stack ? e.stack : e));
     }
   }
 
-  // 送信成功した最新記事の日時のみを既読として保存（失敗分は次回リトライ対象に残す）
+  // 送信成功した記事 ID を既読として保存（未送信分は次回リトライ対象に残す）
+  const mergedSeenIds = mergeSeenIds(seenIds, notifiedIds);
+  if (mergedSeenIds.length > 0) {
+    props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(mergedSeenIds));
+  }
   if (lastSuccessDate) {
-    getScriptProperties().setProperty(
+    props.setProperty(
       PROPERTY_LAST_SEEN_PREFIX + feedUrl,
       lastSuccessDate.toISOString(),
     );
@@ -232,7 +339,8 @@ function parseAtom(root) {
     }
 
     const idEl = e.getChild("id", ns);
-    const id = idEl ? idEl.getText() : link || title;
+    const idText = idEl ? idEl.getText() : "";
+    const id = idText || link || title;
     const updatedEl = e.getChild("updated", ns) || e.getChild("published", ns);
     const date = safeParseDate(updatedEl ? updatedEl.getText() : "");
     out.push({ id, title, link, date });
@@ -495,9 +603,11 @@ function validateSetup() {
   }
 
   // 既読状態
-  const hasSeenState = feedUrls.some(url => {
-    return !!getScriptProperties().getProperty(PROPERTY_LAST_SEEN_PREFIX + url);
-  });
+  const hasSeenState = feedUrls.some(
+    (url) =>
+      !!getScriptProperties().getProperty(PROPERTY_SEEN_IDS_PREFIX + url) ||
+      !!getScriptProperties().getProperty(PROPERTY_LAST_SEEN_PREFIX + url),
+  );
   config.hasReadState = hasSeenState;
   if (feedUrls.length > 0 && !hasSeenState) {
     warnings.push("既読状態がありません。markCurrentAsRead() を実行すると、既存記事の通知をスキップできます。");
