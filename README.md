@@ -154,5 +154,30 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 │   ├── architecture.html# Interactive architecture diagram
 │   ├── architecture.json# Archify specification schema
 │   └── architecture.png # Static diagram capture
-└── .gitignore           # Git ignore rules (.clasp.json, etc.)
+├── test/                # Local test suite (`bun test`)
+└── .claspignore         # Limits `clasp push` to GAS files (see below)
+```
+
+### `clasp push` scope and local tests
+
+`.claspignore` is an **allow-list**: everything is ignored first (`**/**`), then only
+`appsscript.json`, `*.gs`, `*.js` and `*.html` at the repository root are re-included.
+Keeping it an allow-list (rather than a deny-list of `docs/`, `test/`, …) matters, because
+placing a `.claspignore` **replaces** clasp's built-in ignore rules — a deny-list would
+therefore let `node_modules/**/*.js` and root-level tooling `*.js` back into the push set.
+
+Verify what would be uploaded before pushing:
+
+```bash
+clasp status   # Tracked files: appsscript.json, Code.js
+```
+
+When you add a GAS file, add a matching `!` line to `.claspignore`; if you forget, it
+shows up under "Untracked files" in `clasp status`.
+
+Pure functions (`safeParseDate`, `normalizeLineMessage`, chunking, item selection) are
+covered by a small harness that loads `Code.js` with stubbed GAS globals:
+
+```bash
+bun test
 ```

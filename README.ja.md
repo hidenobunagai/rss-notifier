@@ -128,8 +128,33 @@ createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
 │   ├── architecture.html # インタラクティブ構成図
 │   ├── architecture.json # アーキテクチャ定義仕様
 │   └── architecture.png  # アーキテクチャ図キャプチャ
-└── .gitignore           # .clasp.json など除外
+├── test/                # ローカルテスト（`bun test`）
+└── .claspignore         # `clasp push` の対象を GAS ファイルだけに絞る
 ```
 
 > **注意**: `.clasp.json`（scriptId を含む）は `.gitignore` で除外しています。
 > 新しい環境で作業する場合は `clasp clone <scriptId>` で再取得してください。
+
+### `clasp push` の対象とローカルテスト
+
+`.claspignore` は**許可リスト**方式です。まず全除外（`**/**`）し、リポジトリ直下の
+`appsscript.json` / `*.gs` / `*.js` / `*.html` だけを `!` で戻しています。
+拒否リスト（`docs/` や `test/` を列挙する形）にしていないのは、`.claspignore` を置くと
+clasp の既定 ignore が**置き換わる**ためで、その形だと `node_modules/**/*.js` や
+ルート直下のツール用 `*.js` が逆に push 対象へ入ってしまいます。
+
+push 前に実際の対象を確認できます:
+
+```bash
+clasp status   # Tracked files: appsscript.json, Code.js
+```
+
+GAS 側にファイルを足すときは `.claspignore` に `!` の行を足してください
+（足し忘れても `clasp status` の "Untracked files" に出るので気づけます）。
+
+純関数（`safeParseDate` / `normalizeLineMessage` / チャンク分割 / 記事の選別）は、
+GAS グローバルをスタブして `Code.js` を読み込む小さなハーネスで検証しています:
+
+```bash
+bun test
+```
