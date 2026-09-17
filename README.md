@@ -152,7 +152,7 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 ├── README.ja.md         # Japanese documentation
 ├── LICENSE              # MIT license
 ├── docs/                # Architecture and visualization assets
-│   ├── index.html       # GitHub Pages live root
+│   ├── index.html       # GitHub Pages root (redirects to architecture.html)
 │   ├── architecture.html# Interactive architecture diagram
 │   ├── architecture.json# Archify specification schema
 │   └── architecture.png # Static diagram capture
