@@ -207,9 +207,9 @@ function processFeed(feedUrl) {
     return; // 更新なし
   }
 
-  // スパム防止のため一度に送る最大件数を制限（最後の N 件＝最新から順に）
+  // スパム防止のため一度に送る最大件数を制限（古い方から順に送り、残りは次回の実行に回す）
   if (newItems.length > MAX_NOTIFICATIONS_PER_RUN) {
-    newItems = newItems.slice(newItems.length - MAX_NOTIFICATIONS_PER_RUN);
+    newItems = newItems.slice(0, MAX_NOTIFICATIONS_PER_RUN);
   }
 
   const webhook = (props.getProperty(PROPERTY_WEBHOOK_URL) || "").trim();

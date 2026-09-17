@@ -101,24 +101,22 @@ describe("processFeed: ID ベースの既読", () => {
       pubDate: `Tue, ${String(i + 1).padStart(2, "0")} Sep 2026 00:00:00 GMT`,
     }));
 
-  test("① 上限 5 件を超える新着は、次回の実行で残りが通知される（取りこぼし無し）", () => {
+  test("① 上限 5 件を超える新着は、古い方から 5 件ずつ次回以降に通知される（取りこぼし無し）", () => {
     const captured = [];
     const root = rss(rawItems(10));
     const { api, get } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
 
     api.processFeed(FEED);
     const first = sentTitles(captured);
-    expect(first.length).toBe(5);
+    expect(first).toEqual(["A1", "A2", "A3", "A4", "A5"]); // 古い方から 5 件
 
     captured.length = 0;
     api.processFeed(FEED);
     const second = sentTitles(captured);
-    expect(second.length).toBe(5);
+    expect(second).toEqual(["A6", "A7", "A8", "A9", "A10"]); // 残りは次の 15 分で拾われる
 
-    // 10 件すべてが 1 回ずつ通知される（順序はスパム上限の切り方に依存するので問わない）
-    const all = [...first, ...second];
-    expect(new Set(all).size).toBe(10);
-    expect(all.slice().sort()).toEqual(rawItems(10).map((it) => it.title).sort());
+    // 10 件すべてが 1 回ずつ、古い→新しい順に通知される
+    expect([...first, ...second]).toEqual(rawItems(10).map((it) => it.title));
 
     // 既読 ID も 10 件分が保存される
     expect(JSON.parse(get("seenIds:" + FEED)).sort()).toEqual(rawItems(10).map((it) => it.guid).sort());
