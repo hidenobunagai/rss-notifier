@@ -6,15 +6,14 @@
 
 [English](README.md) | [日本語 (Japanese)](README.ja.md)
 
-A lightweight Google Apps Script (GAS) service that monitors RSS/Atom feeds and dispatches real-time notifications to **Discord** and **LINE**. Channels can be activated individually or simultaneously.
+A lightweight Google Apps Script (GAS) service that monitors RSS/Atom feeds and dispatches real-time notifications to **LINE**.
 
 ---
 
 ## ✨ Features
 
 - **Multi-Feed Polling**: Periodically fetches and parses multiple RSS 2.0 and Atom 1.0 feeds.
-- **Dual-Channel Notifications**: Delivers styled Discord Webhook embeds and LINE Messaging API push messages.
-- **Independent Dispatch**: Enable Discord only, LINE only, or both concurrently.
+- **LINE Notifications**: Delivers LINE Messaging API push messages.
 - **Spam & Rate-Limit Protection**: Enforces maximum notifications per run (`MAX_NOTIFICATIONS_PER_RUN`), sleep intervals, and LINE 429 exponential backoff retries.
 - **Persistent State**: Stores last-seen timestamps in `Script Properties` to prevent duplicate alerts across runs.
 - **Zero Hosting Cost**: Runs completely serverless on Google Apps Script free quotas.
@@ -44,14 +43,9 @@ clasp push
 
 ### 2. Configure Script Properties
 
-Open the Apps Script editor and run the following helper functions in order.
-Configure Discord, LINE, or both depending on your target platforms:
+Open the Apps Script editor and run the following helper functions in order:
 
 ```javascript
-// --- For Discord ---
-// Register your Discord Webhook URL
-setWebhookUrl("https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN");
-
 // --- For LINE ---
 // Register your LINE Messaging API Channel Access Token
 setLineChannelAccessToken("YOUR_LINE_CHANNEL_ACCESS_TOKEN");
@@ -70,9 +64,7 @@ markCurrentAsRead();
 ```
 
 > **Channel Activation Rules**:
-> - **Discord**: Enabled if `discordWebhookUrl` is set.
 > - **LINE**: Enabled if both `lineChannelAccessToken` and `lineTargetId` are set.
-> - At least one destination must be configured.
 
 ### 3. Create Time-Driven Trigger
 
@@ -87,9 +79,6 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 | Constant | Default | Description |
 | :--- | :--- | :--- |
 | `MAX_NOTIFICATIONS_PER_RUN` | `5` | Maximum notifications sent per execution (anti-spam) |
-| `DISCORD_USERNAME` | `"RSS Notifier"` | Display username for Discord posts |
-| `DISCORD_EMBED_COLOR` | `3447003` | Left border accent color for Discord embeds (`#3498DB` blue) |
-| `NOTIFY_INTERVAL_MS` | `1000` | Delay between Discord posts in ms (rate-limit prevention) |
 | `LINE_MAX_TEXT_LENGTH` | `5000` | Maximum character length per LINE message |
 | `LINE_MAX_MESSAGES_PER_PUSH` | `5` | Maximum messages batched per LINE push call |
 | `LINE_CHUNK_INTERVAL_MS` | `1000` | Delay between consecutive LINE push requests in ms |
@@ -101,7 +90,6 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 
 | Function | Description |
 | :--- | :--- |
-| `setWebhookUrl(url)` | Save Discord Webhook URL to Script Properties |
 | `setLineChannelAccessToken(token)` | Save LINE Channel Access Token to Script Properties |
 | `setLineTargetId(id)` | Save LINE Target ID (User/Group/Room) to Script Properties |
 | `setFeedUrls(urls)` | Save list of feed URLs to Script Properties |
@@ -133,9 +121,7 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 
 ## 🔍 Troubleshooting
 
-- **No notifications sent**: Ensure `discordWebhookUrl` or both `lineChannelAccessToken` + `lineTargetId` are configured. Run `validateSetup()` to diagnose.
-- **Notification arrives on one channel only**: Read state (`seenIds:<feedUrl>`) is tracked per feed, not per channel. With both Discord and LINE enabled, an article that fails on one channel is still marked as read as soon as the other channel succeeds, so the failed channel never receives it. (Per-channel read state would deliver a burst of backlogged articles the moment an expired token is fixed, which is why it is per feed.) Enable only one channel if you need to avoid this.
-- **Discord 429**: Rate-limited by Discord. Check `NOTIFY_INTERVAL_MS` or reduce execution frequency.
+- **No notifications sent**: Ensure both `lineChannelAccessToken` + `lineTargetId` are configured. Run `validateSetup()` to diagnose.
 - **LINE 401 Unauthorized**: Token is invalid or expired. Re-issue and update via `setLineChannelAccessToken(...)`.
 - **LINE 400 Bad Request**: Invalid target ID or bot is not a member of the group/friend list.
 - **LINE silent failure**: Free tier 1,000 monthly push message limit might be exhausted.
@@ -177,7 +163,7 @@ clasp status   # Tracked files: appsscript.json, Code.js
 When you add a GAS file, add a matching `!` line to `.claspignore`; if you forget, it
 shows up under "Untracked files" in `clasp status`.
 
-Pure functions (`safeParseDate`, `normalizeLineMessage`, `buildDiscordPayload`, chunking, item
+Pure functions (`safeParseDate`, `normalizeLineMessage`, chunking, item
 selection) are covered by a small harness that loads `Code.js` with stubbed GAS globals:
 
 ```bash

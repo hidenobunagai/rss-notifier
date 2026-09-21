@@ -2,13 +2,12 @@
 
 [English](README.md) | [日本語 (Japanese)](README.ja.md)
 
-RSS/Atom フィードの更新を検出して Discord および LINE に通知する Google Apps Script (GAS) プロジェクトです。Discord / LINE はそれぞれ個別に有効化でき、両方同時にも送信可能です。
+RSS/Atom フィードの更新を検出して LINE に通知する Google Apps Script (GAS) プロジェクトです。
 
 ## 機能
 
 - 複数の RSS/Atom フィードを定期ポーリング
-- 新着記事を Discord Webhook および LINE Messaging API で通知
-- Discord / LINE は個別に有効化可能（両方同時送信にも対応）
+- 新着記事を LINE Messaging API で通知
 - 1 回の実行あたりの通知件数を制限（スパム防止）
 - 既読管理を Script Properties に保存（再起動後も状態を維持）
 
@@ -32,14 +31,9 @@ clasp push
 ### 2. Script Properties を設定
 
 GAS エディタのスクリプトエディタで以下の関数を**順に**実行します。
-Discord / LINE どちらを使うかによって必要な関数が異なります（両方も可）。
 
 ```javascript
-// --- Discord を使う場合 ---
-// Discord Webhook URL を登録
-setWebhookUrl("https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN");
-
-// --- LINE を使う場合 ---
+// --- LINE ---
 // LINE Messaging API のチャネルアクセストークンを登録
 setLineChannelAccessToken("YOUR_LINE_CHANNEL_ACCESS_TOKEN");
 // LINE の送信先 ID (ユーザー/グループ/トークルーム) を登録
@@ -55,9 +49,8 @@ markCurrentAsRead();
 
 > 通知先の有効条件:
 >
-> - Discord: `discordWebhookUrl` が設定されていれば送信
 > - LINE: `lineChannelAccessToken` と `lineTargetId` が両方設定されていれば送信
-> - どちらも未設定の場合はエラーで中断します。少なくとも一方は設定してください。
+> - 未設定の場合はエラーで中断します。先に設定してください。
 
 ### 3. 定期トリガーを作成
 
@@ -70,9 +63,6 @@ createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
 | 定数                         | デフォルト       | 説明                                      |
 | ---------------------------- | ---------------- | ----------------------------------------- |
 | `MAX_NOTIFICATIONS_PER_RUN`  | `5`              | 1 実行あたりの最大通知件数                |
-| `DISCORD_USERNAME`           | `"RSS Notifier"` | Discord に表示されるユーザー名            |
-| `DISCORD_EMBED_COLOR`        | `3447003`        | embed の左帯の色 (#3498DB, 青)            |
-| `NOTIFY_INTERVAL_MS`         | `1000`           | Discord 投稿間の待機時間 ms（レート制限） |
 | `LINE_MAX_TEXT_LENGTH`       | `5000`           | LINE 1 メッセージあたりの文字数上限       |
 | `LINE_MAX_MESSAGES_PER_PUSH` | `5`              | LINE 1 push あたりのメッセージ数上限      |
 | `LINE_CHUNK_INTERVAL_MS`     | `1000`           | LINE push 間の待機時間 ms（レート制限）   |
@@ -82,7 +72,6 @@ createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
 
 | 関数                               | 説明                                                   |
 | ---------------------------------- | ------------------------------------------------------ |
-| `setWebhookUrl(url)`               | Discord Webhook URL を登録                             |
 | `setLineChannelAccessToken(token)` | LINE チャネルアクセストークンを登録                    |
 | `setLineTargetId(id)`              | LINE 送信先 ID (ユーザー/グループ/トークルーム) を登録 |
 | `setFeedUrls(urls)`                | 監視フィード URL 一覧を設定                            |
@@ -112,9 +101,7 @@ createTimeTrigger(); // 15 分ごとに checkFeeds() を実行
 
 ## トラブルシュート
 
-- **通知が来ない**: `discordWebhookUrl` または `lineChannelAccessToken` + `lineTargetId` が未設定ではないか確認。実行ログに `Notify error` が出ていないか確認
-- **片方のチャネルにしか届かない**: 既読（`seenIds:<feedUrl>`）はフィード単位で、チャネル別ではありません。Discord / LINE の両方を有効にしている場合、片方のチャネルで失敗した記事も、もう片方の成功時点で既読になり、失敗した側には届きません（チャネル別の既読にすると、トークン切れから復旧した瞬間に溜まった記事が一斉に届くため、あえてフィード単位にしています）。取りこぼしを避けたい場合は、どちらか一方のチャネルだけを有効にしてください
-- **Discord 429**: サーバー側のレート制限。しばらく待つか投稿間隔を空ける
+- **通知が来ない**: `lineChannelAccessToken` + `lineTargetId` が未設定ではないか確認。実行ログに `Notify error` が出ていないか確認
 - **LINE 401 Unauthorized**: チャネルアクセストークンが不正または期限切れ。再発行して `setLineChannelAccessToken(...)` で更新
 - **LINE 400 Bad Request**: `lineTargetId` が不正、または公式アカウントと友だち追加されていない。ID の種類（ユーザー / グループ / トークルーム）と友だち追加状態を確認
 - **LINE で届かない（エラーなし）**: 無料枠の月 1,000 メッセージ上限に達していないか確認
@@ -154,7 +141,7 @@ clasp status   # Tracked files: appsscript.json, Code.js
 GAS 側にファイルを足すときは `.claspignore` に `!` の行を足してください
 （足し忘れても `clasp status` の "Untracked files" に出るので気づけます）。
 
-純関数（`safeParseDate` / `normalizeLineMessage` / `buildDiscordPayload` / チャンク分割 / 記事の選別）は、
+純関数（`safeParseDate` / `normalizeLineMessage` / チャンク分割 / 記事の選別）は、
 GAS グローバルをスタブして `Code.js` を読み込む小さなハーネスで検証しています:
 
 ```bash

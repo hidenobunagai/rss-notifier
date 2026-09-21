@@ -4,14 +4,19 @@ import { describe, expect, test } from "bun:test";
 import { el, loadGas, okFetch, rss } from "./gas-harness.js";
 
 const FEED = "https://example.com/feed";
-const WEBHOOK = "https://discord.com/api/webhooks/1/token";
-const DISCORD_SETUP = { discordWebhookUrl: WEBHOOK, feedUrls: JSON.stringify([FEED]) };
+const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
+const LINE_SETUP = {
+  lineChannelAccessToken: "token",
+  lineTargetId: "U1234567890",
+  feedUrls: JSON.stringify([FEED]),
+};
 
-// Discord 投稿（webhook 宛）だけを拾い、記事タイトルの配列を返す
+// LINE 送信（push エンドポイント宛）を拾い、記事タイトルの配列を返す
 function sentTitles(captured) {
   return captured
-    .filter((c) => c.url === WEBHOOK)
-    .map((c) => JSON.parse(c.params.payload).embeds[0].title);
+    .filter((c) => c.url === LINE_PUSH_URL)
+    .flatMap((c) => JSON.parse(c.params.payload).messages.map((m) => m.text))
+    .flatMap((text) => [...text.matchAll(/- タイトル: (.+)$/gm)].map((m) => m[1]));
 }
 
 describe("parseRssChannel / fetchFeedItems", () => {
@@ -73,61 +78,6 @@ describe("normalizeLineMessage", () => {
   });
 });
 
-describe("buildDiscordPayload", () => {
-  test("300 字の title は 256 字（255 字 + …）に丸める", () => {
-    const { api } = loadGas();
-    const payload = api.buildDiscordPayload({ title: "あ".repeat(300), link: "", date: new Date(0) }, FEED);
-    const title = payload.embeds[0].title;
-    expect(title.length).toBe(256); // Discord の embed title 上限
-    expect(title).toBe("あ".repeat(255) + "…");
-  });
-
-  test("上限以内の title はそのまま", () => {
-    const { api } = loadGas();
-    const payload = api.buildDiscordPayload({ title: "短いタイトル", link: "", date: new Date(0) }, FEED);
-    expect(payload.embeds[0].title).toBe("短いタイトル");
-  });
-
-  test("相対リンクには url を付けない（Discord が 400 にするため）", () => {
-    const { api } = loadGas();
-    for (const link of ["/blog/relative", "../post/1", "example.com/x", ""]) {
-      const embed = api.buildDiscordPayload({ title: "t", link, date: new Date(0) }, FEED).embeds[0];
-      expect("url" in embed).toBe(false);
-    }
-  });
-
-  test("絶対 http(s) URL は url に入り、2048 字超は落とす", () => {
-    const { api } = loadGas();
-    const ok = api.buildDiscordPayload({ title: "t", link: "https://example.com/1", date: new Date(0) }, FEED);
-    expect(ok.embeds[0].url).toBe("https://example.com/1");
-    expect(ok.embeds[0].footer.text).toBe(FEED);
-    expect(ok.username).toBe("RSS Notifier");
-    expect(ok.allowed_mentions).toEqual({ parse: [] });
-
-    const tooLong = "https://example.com/" + "a".repeat(2048);
-    expect("url" in api.buildDiscordPayload({ title: "t", link: tooLong, date: new Date(0) }, FEED).embeds[0]).toBe(false);
-  });
-
-  test("日時が無い記事には timestamp を付けない", () => {
-    const { api } = loadGas();
-    const embed = api.buildDiscordPayload({ title: "t", link: "", date: new Date(0) }, FEED).embeds[0];
-    expect("timestamp" in embed).toBe(false);
-  });
-
-  test("processFeed 経由でも上限内の payload が送られる", () => {
-    const captured = [];
-    const root = rss([
-      { title: "あ".repeat(300), link: "/blog/relative", guid: "long1", pubDate: "Tue, 15 Sep 2026 09:00:00 GMT" },
-    ]);
-    const { api } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
-    api.processFeed(FEED);
-
-    const embed = JSON.parse(captured.find((c) => c.url === WEBHOOK).params.payload).embeds[0];
-    expect(embed.title.length).toBe(256);
-    expect("url" in embed).toBe(false);
-  });
-});
-
 describe("postToLineInChunks", () => {
   test("5000 字を超えるメッセージはチャンク分割され、各 push は 5 件以内", () => {
     const captured = [];
@@ -159,7 +109,7 @@ describe("processFeed: ID ベースの既読", () => {
   test("① 上限 5 件を超える新着は、古い方から 5 件ずつ次回以降に通知される（取りこぼし無し）", () => {
     const captured = [];
     const root = rss(rawItems(10));
-    const { api, get } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
+    const { api, get } = loadGas({ properties: LINE_SETUP, fetch: okFetch(captured), root });
 
     api.processFeed(FEED);
     const first = sentTitles(captured);
@@ -185,7 +135,7 @@ describe("processFeed: ID ベースの既読", () => {
       { title: "B3", link: `${FEED}/b3` },
     ];
     const { api } = loadGas({
-      properties: DISCORD_SETUP,
+      properties: LINE_SETUP,
       fetch: okFetch(captured),
       root: () => rss(items),
     });
@@ -199,38 +149,30 @@ describe("processFeed: ID ベースの既読", () => {
     expect(sentTitles(captured)).toEqual(["B4"]); // 日時が 1970 でも ID なら新着と判定できる
   });
 
-  test("③ 同日時の記事が 1 件失敗しても、次回の実行でリトライされる", () => {
+  test("③ LINE 送信が失敗したら既読にせず、次回の実行で全件再送される", () => {
     const captured = [];
-    let attempts = [];
-    let failC2 = true;
-    const sameDate = "Tue, 15 Sep 2026 09:00:00 GMT";
-    const root = rss(
-      ["C1", "C2", "C3", "C4"].map((t) => ({ title: t, link: `${FEED}/${t}`, pubDate: sameDate })),
-    );
+    let lineCode = 500;
+    const root = rss(rawItems(3));
     const fetch = (url, params) => {
-      const title = params?.payload ? JSON.parse(params.payload).embeds[0].title : null;
-      if (title) attempts.push(title);
-      const code = title === "C2" && failC2 ? 500 : 200;
+      const code = url === LINE_PUSH_URL ? lineCode : 200;
       if (code < 400) captured.push({ url, params }); // 成功した送信だけを記録する
       return { getResponseCode: () => code, getContentText: () => "", getHeaders: () => ({}) };
     };
-    const { api } = loadGas({ properties: DISCORD_SETUP, fetch, root });
+    const { api } = loadGas({ properties: LINE_SETUP, fetch, root });
 
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual(["C1", "C3", "C4"]); // C2 だけ失敗
+    expect(sentTitles(captured)).toEqual([]); // 送信失敗なので既読も進まない
 
-    failC2 = false;
+    lineCode = 200;
     captured.length = 0;
-    attempts = [];
     api.processFeed(FEED);
-    expect(attempts).toEqual(["C2"]); // 失敗した C2 だけが再送される
-    expect(sentTitles(captured)).toEqual(["C2"]);
+    expect(sentTitles(captured)).toEqual(["A1", "A2", "A3"]); // 全件が 1 度ずつ送られる
   });
 
   test("同じ記事は 2 度通知されない（通常経路）", () => {
     const captured = [];
     const root = rss(rawItems(3));
-    const { api, get } = loadGas({ properties: DISCORD_SETUP, fetch: okFetch(captured), root });
+    const { api, get } = loadGas({ properties: LINE_SETUP, fetch: okFetch(captured), root });
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual(["A1", "A2", "A3"]);
     expect(JSON.parse(get("seenIds:" + FEED))).toEqual(["a1", "a2", "a3"]);
@@ -244,7 +186,7 @@ describe("processFeed: ID ベースの既読", () => {
     const captured = [];
     const items = rawItems(3);
     const { api, get } = loadGas({
-      properties: { ...DISCORD_SETUP, ["lastSeen:" + FEED]: "2026-09-03T00:00:00.000Z" },
+      properties: { ...LINE_SETUP, ["lastSeen:" + FEED]: "2026-09-03T00:00:00.000Z" },
       fetch: okFetch(captured),
       root: () => rss(items),
     });

@@ -11,7 +11,6 @@ const EXPORTS = [
   "fetchFeedItems",
   "safeParseDate",
   "normalizeLineMessage",
-  "buildDiscordPayload",
   "postToLineInChunks",
   "parseSeenIds",
   "selectNewItems",

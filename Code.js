@@ -1,18 +1,15 @@
-// RSS → Discord / LINE 通知 (GAS)
-// - フィード更新を検出し、Discord Webhook および LINE Messaging API に投稿します。
+// RSS → LINE 通知 (GAS)
+// - フィード更新を検出し、LINE Messaging API に投稿します。
 // - 一度に大量投稿を避けるため送信上限を設けています。
 // - 既読管理は Script Properties に保存します。
-// - Discord / LINE はそれぞれ個別に有効化でき、両方同時にも送信可能です。
 
 // ===== 設定値 =====
 // 初回セットアップ:
-//   1. setWebhookUrl('<DISCORD_WEBHOOK_URL>') を実行（Discord を使う場合）
-//   2. setLineChannelAccessToken('<LINE_CHANNEL_ACCESS_TOKEN>') を実行（LINE を使う場合）
-//   3. setLineTargetId('<LINE_TARGET_ID>') を実行（LINE を使う場合）
-//   4. setFeedUrls(['https://example.com/feed', ...]) を実行
-//   5. markCurrentAsRead() を実行（既存記事を通知しないようスキップ）
-//   6. createTimeTrigger() を実行
-const PROPERTY_WEBHOOK_URL = "discordWebhookUrl";
+//   1. setLineChannelAccessToken('<LINE_CHANNEL_ACCESS_TOKEN>') を実行
+//   2. setLineTargetId('<LINE_TARGET_ID>') を実行
+//   3. setFeedUrls(['https://example.com/feed', ...]) を実行
+//   4. markCurrentAsRead() を実行（既存記事を通知しないようスキップ）
+//   5. createTimeTrigger() を実行
 const PROPERTY_LINE_CHANNEL_ACCESS_TOKEN = "lineChannelAccessToken";
 const PROPERTY_LINE_TARGET_ID = "lineTargetId";
 const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列（初回移行と診断用に保持。記事選別には不使用）
@@ -23,12 +20,6 @@ const MAX_SEEN_IDS = 50; // seenIds に残す件数上限
 const MAX_SEEN_IDS_JSON_LENGTH = 6000;
 const PROPERTY_FEED_URLS = "feedUrls"; // JSON 配列で保存
 const MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（スパム対策）
-const DISCORD_USERNAME = "RSS Notifier";
-const DISCORD_EMBED_COLOR = 3447003; // #3498DB (青)
-// Discord の embed 上限。超えると 400 で記事ごと落ちる（既読は進むので恒久取りこぼしになる）
-const DISCORD_EMBED_TITLE_LIMIT = 256; // title の文字数上限
-const DISCORD_EMBED_URL_LIMIT = 2048; // url の文字数上限
-const NOTIFY_INTERVAL_MS = 1000; // Discord レート制限対策: 投稿間隔 (ms)
 // LINE Messaging API 関連 (LINE Notify は 2025/3 廃止のため非採用)
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_MAX_RETRIES = 3;
@@ -215,51 +206,29 @@ function processFeed(feedUrl) {
     newItems = newItems.slice(0, MAX_NOTIFICATIONS_PER_RUN);
   }
 
-  const webhook = (props.getProperty(PROPERTY_WEBHOOK_URL) || "").trim();
   const lineToken = (props.getProperty(PROPERTY_LINE_CHANNEL_ACCESS_TOKEN) || "").trim();
   const lineTargetId = (props.getProperty(PROPERTY_LINE_TARGET_ID) || "").trim();
-  const hasDiscord = !!webhook;
   const hasLine = !!lineToken && !!lineTargetId;
 
-  if (!hasDiscord && !hasLine) {
+  if (!hasLine) {
     throw new Error(
-      "通知先が未設定です。setWebhookUrl(...) または setLineChannelAccessToken(...) + setLineTargetId(...) を先に実行してください。",
+      "通知先が未設定です。setLineChannelAccessToken(...) + setLineTargetId(...) を先に実行してください。",
     );
   }
 
-  // ----- Discord 送信 (embed 形式で 1 記事ずつ投稿) -----
+  // ----- LINE 送信 (プレーンテキストをチャンク分割で一括送信) -----
   let lastSuccessDate = null;
   const notifiedIds = [];
-  if (hasDiscord) {
-    for (let i = 0; i < newItems.length; i++) {
-      if (i > 0) Utilities.sleep(NOTIFY_INTERVAL_MS);
-      const item = newItems[i];
-      try {
-        notifyDiscord(item, feedUrl, webhook);
-        lastSuccessDate = item.date;
-        notifiedIds.push(item.id);
-      } catch (e) {
-        // 個別投稿エラーはログのみに留め、後続を続行
-        Logger.log("Notify error (Discord): " + (e && e.stack ? e.stack : e));
-      }
+  try {
+    const messages = newItems.map((item) => buildItemMessage(item, feedUrl));
+    postToLineInChunks(lineToken, lineTargetId, messages);
+    // LINE 成功をもって既読基準にする
+    lastSuccessDate = newItems[newItems.length - 1].date;
+    for (const item of newItems) {
+      notifiedIds.push(item.id);
     }
-  }
-
-  // ----- LINE 送信 (プレーンテキストをチャンク分割で一括送信) -----
-  if (hasLine) {
-    try {
-      const messages = newItems.map((item) => buildItemMessage(item, feedUrl));
-      postToLineInChunks(lineToken, lineTargetId, messages);
-      // Discord 未使用時は LINE 成功をもって既読基準にする
-      if (!hasDiscord) {
-        lastSuccessDate = newItems[newItems.length - 1].date;
-      }
-      for (const item of newItems) {
-        notifiedIds.push(item.id);
-      }
-    } catch (e) {
-      Logger.log("Notify error (LINE): " + (e && e.stack ? e.stack : e));
-    }
+  } catch (e) {
+    Logger.log("Notify error (LINE): " + (e && e.stack ? e.stack : e));
   }
 
   // 送信成功した記事 ID を既読として保存（未送信分は次回リトライ対象に残す）
@@ -351,52 +320,10 @@ function parseAtom(root) {
   return out;
 }
 
-// ===== Discord 通知 =====
-
-/**
- * Discord Webhook に送る payload を組み立てる（純関数）
- * Discord は上限超過や不正な url を 400 で拒否し、記事が丸ごと届かなくなるため、
- * 送信前に title を丸め（丸めは LINE と同じ normalizeLineMessage を再利用）、
- * url は絶対 http(s) URL のときだけ入れる。
- */
-function buildDiscordPayload(item, feedUrl) {
-  const hasTimestamp = item.date && item.date.getTime() !== 0;
-  // 相対パス（例: Atom の <link href="/blog/x">）は Discord が 400 にするので付けない
-  const link = item.link || "";
-  const hasUrl = /^https?:\/\//.test(link) && link.length <= DISCORD_EMBED_URL_LIMIT;
-  return {
-    username: DISCORD_USERNAME,
-    allowed_mentions: { parse: [] },
-    embeds: [
-      {
-        title: normalizeLineMessage(item.title || "(タイトルなし)", DISCORD_EMBED_TITLE_LIMIT),
-        ...(hasUrl ? { url: link } : {}),
-        color: DISCORD_EMBED_COLOR,
-        footer: { text: feedUrl },
-        ...(hasTimestamp ? { timestamp: item.date.toISOString() } : {}),
-      },
-    ],
-  };
-}
-
-function notifyDiscord(item, feedUrl, webhook) {
-  const payload = buildDiscordPayload(item, feedUrl);
-  const res = UrlFetchApp.fetch(webhook, {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
-  });
-  const code = res.getResponseCode();
-  if (code >= 400) {
-    throw new Error("Discord post failed " + code + ": " + res.getContentText());
-  }
-}
-
 // ===== LINE 通知 =====
 
 /**
- * 通知メッセージを構築 (Discord / LINE 共通のプレーンテキスト)
+ * 通知メッセージを構築 (LINE 送信用のプレーンテキスト)
  * Markdown 非依存のため LINE でもそのまま表示可能。
  */
 function buildItemMessage(item, feedUrl) {
@@ -508,17 +435,6 @@ function postToLine(channelAccessToken, targetId, messageTexts) {
 
 // ===== ユーティリティ =====
 
-/** Discord Webhook URL を Script Properties に登録する */
-function setWebhookUrl(webhookUrl) {
-  const validHost =
-    /^https:\/\/(discord\.com|discordapp\.com|ptb\.discord\.com|canary\.discord\.com)\/api\/webhooks\//;
-  if (!webhookUrl || !validHost.test(webhookUrl)) {
-    throw new Error("不正な Webhook URL です");
-  }
-  getScriptProperties().setProperty(PROPERTY_WEBHOOK_URL, webhookUrl);
-  Logger.log("Webhook URL を登録しました。");
-}
-
 /** LINE Messaging API のチャネルアクセストークンを Script Properties に登録する */
 function setLineChannelAccessToken(token) {
   if (!token || typeof token !== "string") {
@@ -608,15 +524,12 @@ function validateSetup() {
     warnings.push("フィードURLが未設定です。setFeedUrls([...]) を実行してください。");
   }
 
-  // Discord
-  const discordUrl = getScriptProperties().getProperty(PROPERTY_WEBHOOK_URL);
-  config.discordConfigured = !!discordUrl;
   const lineToken = getScriptProperties().getProperty(PROPERTY_LINE_CHANNEL_ACCESS_TOKEN);
   const lineTarget = getScriptProperties().getProperty(PROPERTY_LINE_TARGET_ID);
   config.lineConfigured = !!(lineToken && lineTarget);
 
-  if (!config.discordConfigured && !config.lineConfigured) {
-    warnings.push("通知先が未設定です。Discord または LINE のいずれかを設定してください。");
+  if (!config.lineConfigured) {
+    warnings.push("通知先が未設定です。LINE の設定を行ってください。");
   }
 
   // 既読状態
