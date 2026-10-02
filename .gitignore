@@ -12,3 +12,7 @@
 .env
 .env.*
 !.env.example
+
+# archify visual-check artifacts
+docs/*.visual-check.*
+
