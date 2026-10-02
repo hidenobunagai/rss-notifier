@@ -294,6 +294,73 @@ describe("parseAtom の ID", () => {
   });
 });
 
+// 6868457 で embed.url に入れないようにした Moody Blues Atom は相対 href
+// （<link href="/blog/x"/>）のままで、通知のタイトルがクリックできないままだった。
+// フィード URL を基準に絶対化してから通知する。
+describe("resolveLink: 記事リンクの絶対 URL 解決", () => {
+  const ATOM_FEED = "https://www.moodyblues.com/rss/blog-entries.xml";
+
+  test("相対 href はフィード URL を基準に絶対 URL になる（Atom）", () => {
+    const entry = (title, href) =>
+      el("entry", "", [
+        el("title", title),
+        el("id", "id-" + title),
+        el("link", "", [], { rel: "alternate", href }),
+      ]);
+    const root = el("feed", "", [
+      entry("ルート相対", "/blog/entries/1.aspx"),
+      entry("ディレクトリ相対", "2.aspx"),
+      entry("上位へ", "../other/3.aspx"),
+      entry("絶対 URL", "https://example.com/4"),
+    ]);
+    const { api } = loadGas({ root, fetch: okFetch() });
+    expect(api.fetchFeedItems(ATOM_FEED).map((it) => it.link)).toEqual([
+      "https://www.moodyblues.com/blog/entries/1.aspx",
+      "https://www.moodyblues.com/rss/2.aspx",
+      "https://www.moodyblues.com/other/3.aspx",
+      "https://example.com/4",
+    ]);
+  });
+
+  test("相対 link はフィード URL を基準に絶対 URL になる（RSS）", () => {
+    const root = rss([
+      { title: "相対", link: "/blog/1", guid: "g1" },
+      { title: "なし", guid: "g2" },
+    ]);
+    const { api } = loadGas({ root, fetch: okFetch() });
+    expect(api.fetchFeedItems(ATOM_FEED).map((it) => it.link)).toEqual([
+      "https://www.moodyblues.com/blog/1",
+      "",
+    ]);
+  });
+
+  test("絶対 URL はそのまま、空文字は空文字、スキーマ相対は feedUrl のスキーマを継ぐ", () => {
+    const { api } = loadGas();
+    const f = (link, feed) => api.resolveLink(link, feed);
+    expect(f("https://example.com/1", ATOM_FEED)).toBe("https://example.com/1");
+    expect(f("/blog/x", ATOM_FEED)).toBe("https://www.moodyblues.com/blog/x");
+    expect(f("//cdn.example.com/x", ATOM_FEED)).toBe("https://cdn.example.com/x");
+    expect(f("", ATOM_FEED)).toBe("");
+    expect(f("   ", ATOM_FEED)).toBe("");
+    // feedUrl が http(s) でなければ解決せず元の値を返す
+    expect(f("/blog/x", "ftp://example.com/f")).toBe("/blog/x");
+    expect(f("/blog/x", "")).toBe("/blog/x");
+  });
+
+  test("解決後の URL は LINE 通知の本文にも出る", () => {
+    const captured = [];
+    const root = rss([
+      { title: "相対", link: "/blog/1", guid: "g1", pubDate: "Tue, 15 Sep 2026 09:00:00 GMT" },
+    ]);
+    const { api } = loadGas({ properties: LINE_SETUP, fetch: okFetch(captured), root });
+    api.processFeed(ATOM_FEED);
+    const texts = captured
+      .filter((c) => c.url === LINE_PUSH_URL)
+      .flatMap((c) => JSON.parse(c.params.payload).messages.map((m) => m.text));
+    expect(texts[0]).toContain("- リンク: https://www.moodyblues.com/blog/1");
+  });
+});
+
 describe("parseSeenIds / selectNewItems / mergeSeenIds", () => {
   test("parseSeenIds は壊れた値・非配列を空配列として扱う", () => {
     const { api } = loadGas();

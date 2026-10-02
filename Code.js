@@ -262,21 +262,69 @@ function fetchFeedItems(feedUrl) {
   const name = root.getName().toLowerCase();
 
   if (name === "rss") {
-    return parseRssChannel(root.getChild("channel"));
+    return parseRssChannel(root.getChild("channel"), feedUrl);
   } else if (name === "feed") {
-    return parseAtom(root);
+    return parseAtom(root, feedUrl);
   } else {
     throw new Error("Unsupported feed root: " + name);
   }
 }
 
+/**
+ * 記事リンクを絶対 URL へ解決する（RSS の <link>・Atom の href が相対の場合の仕様）
+ * GAS の V8 には URL クラスが無いので、正規表現 + パス連結で自前実装する
+ * （開発者ガイドの「Unavailable APIs」で URL は利用不可と明記されている）。
+ * xml:base は見ない。解決できない場合は元の値をそのまま返す。
+ * ponytail: WHATWG URL と完全一致はしない（パス内の空セグメントの圧縮・パーセント
+ * デコード・ホストの小文字化・空リンクの扱い）。フィードの link は実用上これで足りる。
+ * 完全一致が必要になったら whatwg-url 系のポリフィルを入れる。
+ * @param {string} link
+ * @param {string} feedUrl
+ * @returns {string}
+ */
+function resolveLink(link, feedUrl) {
+  if (!link) return "";
+  const text = String(link).trim();
+  if (!text) return ""; // <link> が空・空白のみなら「リンク無し」扱い
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text)) return text; // 既に絶対 URL
+  // origin = http(s)://host、dir = feedUrl のディレクトリ（末尾スラッシュ込み）
+  const base = /^(https?):\/\/([^\/?#]*)([^?#]*)/i.exec(String(feedUrl || "").trim());
+  if (!base) return text; // feedUrl が http(s) でなければ解決しない
+  const scheme = (base[1] || "").toLowerCase();
+  const host = base[2] || "";
+  if (!scheme || !host) return text;
+  const basePath = base[3] || "/";
+  if (text.startsWith("//")) return scheme + ":" + text; // スキーマ相対
+  const query = text.indexOf("?");
+  const hash = text.indexOf("#");
+  const cut = query < 0 ? hash : hash < 0 ? query : Math.min(query, hash);
+  const path = cut < 0 ? text : text.slice(0, cut);
+  const tail = cut < 0 ? "" : text.slice(cut);
+  const dir = path.startsWith("/")
+    ? "/"
+    : basePath.slice(0, basePath.lastIndexOf("/") + 1);
+  const origin = scheme + "://" + host;
+  const segments = (dir + path).split("/");
+  const out = [];
+  for (const seg of segments) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  const prefix = out.length ? origin + "/" + out.join("/") : origin;
+  return path.endsWith("/") ? prefix + "/" : prefix + tail;
+}
+
 // RSS 2.0
-function parseRssChannel(channel) {
+function parseRssChannel(channel, feedUrl) {
   const items = channel.getChildren("item");
   const out = [];
   for (const it of items) {
     const title = getChildText(it, "title");
-    const link = getChildText(it, "link");
+    const link = resolveLink(getChildText(it, "link"), feedUrl);
     const guid = getChildText(it, "guid");
     const pubDate =
       getChildText(it, "pubDate") || getChildTextNS(it, "date", "http://purl.org/dc/elements/1.1/");
@@ -288,7 +336,7 @@ function parseRssChannel(channel) {
 }
 
 // Atom 1.0
-function parseAtom(root) {
+function parseAtom(root, feedUrl) {
   const ns = root.getNamespace();
   const entries = root.getChildren("entry", ns);
   const out = [];
@@ -319,7 +367,7 @@ function parseAtom(root) {
     const id = idText || link || title;
     const updatedEl = e.getChild("updated", ns) || e.getChild("published", ns);
     const date = safeParseDate(updatedEl ? updatedEl.getText() : "");
-    out.push({ id, title, link, date });
+    out.push({ id, title, link: resolveLink(link, feedUrl), date });
   }
   return out;
 }

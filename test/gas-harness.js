@@ -15,6 +15,7 @@ const EXPORTS = [
   "parseSeenIds",
   "selectNewItems",
   "mergeSeenIds",
+  "resolveLink",
 ];
 
 /**
