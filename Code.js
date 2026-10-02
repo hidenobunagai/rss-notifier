@@ -135,8 +135,11 @@ function selectNewItems(items, seenIds) {
  * @returns {string[]}
  */
 function mergeSeenIds(seenIds, notifiedIds) {
-  const filtered = seenIds.filter((id) => !notifiedIds.includes(id));
-  const merged = filtered.concat(notifiedIds).slice(-MAX_SEEN_IDS);
+  // 通知済み ID どうしの重複を先に畳む（フィード側に同じ id の記事が複数あると
+  // notifiedIds に重複が入り、MAX_SEEN_IDS / JSON 長の上限を余計に食う）
+  const unique = Array.from(new Set(notifiedIds));
+  const filtered = seenIds.filter((id) => !unique.includes(id));
+  const merged = filtered.concat(unique).slice(-MAX_SEEN_IDS);
   while (merged.length > 1 && JSON.stringify(merged).length > MAX_SEEN_IDS_JSON_LENGTH) {
     merged.shift(); // 長い ID のフィードでは古い方から落とす
   }

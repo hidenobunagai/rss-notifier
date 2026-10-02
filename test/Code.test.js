@@ -389,6 +389,13 @@ describe("parseSeenIds / selectNewItems / mergeSeenIds", () => {
     expect(merged[49]).toBe("id59");
   });
 
+  test("mergeSeenIds は notifiedIds 内の重複も畳む", () => {
+    const { api } = loadGas();
+    // フィード内に同じ id の記事が複数あると notifiedIds 自体に重複が入る
+    expect(api.mergeSeenIds([], ["a1", "a1", "a2"])).toEqual(["a1", "a2"]);
+    expect(api.mergeSeenIds(["a1", "a1"], ["a1", "a2"])).toEqual(["a1", "a2"]);
+  });
+
   test("mergeSeenIds は長い ID でも JSON を保存上限内に収める（新しい方を残す）", () => {
     const { api } = loadGas();
     // 1 件 300 字超 × 50 件 = 16KB 超。Script Properties の 1 値 9KB 制限に収める必要がある
