@@ -1,6 +1,7 @@
 // Code.js（GAS）の純関数と選別ロジックのテスト。
 // GAS API はガスハーネスが差し替えるので、bun test からそのまま呼べる。
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { el, loadGas, okFetch, rss } from "./gas-harness.js";
 
 const FEED = "https://example.com/feed";
@@ -83,7 +84,7 @@ describe("postToLineInChunks", () => {
     const captured = [];
     const { api } = loadGas({ fetch: okFetch(captured) });
     const messages = ["a".repeat(4000), "b".repeat(4000), "c".repeat(4000)];
-    api.postToLineInChunks("token", "target", messages);
+    api.postToLineInChunks("token", "target", messages, []);
 
     expect(captured.length).toBeGreaterThan(0);
     const texts = captured.flatMap((c) => JSON.parse(c.params.payload).messages.map((m) => m.text));
@@ -92,6 +93,31 @@ describe("postToLineInChunks", () => {
       expect(JSON.parse(c.params.payload).messages.length).toBeLessThanOrEqual(5);
       expect(c.params.headers.Authorization).toBe("Bearer token");
     }
+  });
+
+  test("push が成功するたびに、含めた記事 index が呼び出し側の配列に積まれる", () => {
+    const { api } = loadGas({ fetch: okFetch() });
+    const messages = ["a".repeat(4000), "b".repeat(4000), "c".repeat(4000), "d".repeat(4000)];
+    // 1 メッセージ = 1 チャンク。5 チャンク 1 push なので push は 1 回 = 全 index
+    const sentIndexes = [];
+    api.postToLineInChunks("token", "target", messages, sentIndexes);
+    expect(sentIndexes).toEqual([[0, 1, 2, 3]]);
+
+    // 同じチャンクに畳まれた場合も元の index に戻る
+    const merged = [];
+    api.postToLineInChunks("token", "target", ["a", "b", "c".repeat(4000)], merged);
+    expect(merged).toEqual([[0, 1, 2]]);
+  });
+
+  test("途中で push が失敗しても、成功した push 分の index は残る", () => {
+    const { api } = loadGas({
+      fetch: () => ({ getResponseCode: () => 500, getContentText: () => "", getHeaders: () => ({}) }),
+    });
+    const sentIndexes = [];
+    expect(() =>
+      api.postToLineInChunks("token", "target", Array.from({ length: 6 }, () => "a".repeat(4000)), sentIndexes),
+    ).toThrow("LINE 送信エラー (500)");
+    expect(sentIndexes).toEqual([]); // 1 push 目も失敗したので何も積まれない
   });
 });
 
@@ -180,6 +206,51 @@ describe("processFeed: ID ベースの既読", () => {
     captured.length = 0;
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual([]);
+  });
+
+  // チャンク分割送信の途中で push が失敗すると、既に届いた分の記事まで
+  // 既読にならず次回に再送されてしまう（重複通知）。
+  test("④ 2 チャンク目だけ 500 → 1 チャンク目の記事は再送されず、2 チャンク目は再送される", () => {
+    const captured = [];
+    let pushCount = 0;
+    let failOnce = true;
+    const fetch = (url, params) => {
+      if (url !== LINE_PUSH_URL) {
+        return { getResponseCode: () => 200, getContentText: () => "", getHeaders: () => ({}) };
+      }
+      pushCount++;
+      const code = pushCount === 2 && failOnce ? 500 : 200; // 2 番目の push だけ 1 回だけ失敗
+      if (code < 400) captured.push({ url, params });
+      return { getResponseCode: () => code, getContentText: () => "", getHeaders: () => ({}) };
+    };
+
+    // 1 push = 5 チャンク。2 チャンク目の push まで作るため上限を持ち上げる
+    // （processFeed は 5 件しか送らないので、現物の設定では 1 push で終わる）
+    const source = readFileSync(new URL("../Code.js", import.meta.url), "utf8").replace(
+      "const MAX_NOTIFICATIONS_PER_RUN = 5;",
+      "const MAX_NOTIFICATIONS_PER_RUN = 12;",
+    );
+    // メッセージを 4000 字にして 1 チャンク = 1 記事にし、12 記事を 5 + 5 + 2 の
+    // 3 push に分ける（LINE_MAX_MESSAGES_PER_PUSH = 5 のまま）
+    const items = rawItems(12).map((it) => ({ ...it, title: it.title + "x".repeat(4000) }));
+    const { api, get } = loadGas({ properties: LINE_SETUP, fetch, root: () => rss(items), source });
+    const titles = () => items.map((it) => it.title);
+
+    // 1 回目: push#1（記事 1〜5）は届く。push#2（記事 6〜10）が 500 → 例外で catch へ
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(titles().slice(0, 5));
+    expect(pushCount).toBe(2);
+
+    // 届いた 5 件だけが既読に入る
+    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(rawItems(5).map((it) => it.guid));
+
+    // 2 回目: 記事 6〜12 だけが再送される（1 チャンク目は再送されない）
+    failOnce = false;
+    pushCount = 0;
+    captured.length = 0;
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(titles().slice(5));
+    expect(JSON.parse(get("seenIds:" + FEED)).length).toBe(12);
   });
 
   test("移行: lastSeen だけがあるインストールは既存記事を再通知せず、以降の新着は通知する", () => {

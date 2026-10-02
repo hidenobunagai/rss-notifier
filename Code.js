@@ -219,16 +219,20 @@ function processFeed(feedUrl) {
   // ----- LINE 送信 (プレーンテキストをチャンク分割で一括送信) -----
   let lastSuccessDate = null;
   const notifiedIds = [];
+  // push が成功した記事 index。途中で失敗しても、ここまで届いた記事だけは既読にする
+  const sentIndexes = [];
   try {
     const messages = newItems.map((item) => buildItemMessage(item, feedUrl));
-    postToLineInChunks(lineToken, lineTargetId, messages);
+    postToLineInChunks(lineToken, lineTargetId, messages, sentIndexes);
     // LINE 成功をもって既読基準にする
     lastSuccessDate = newItems[newItems.length - 1].date;
-    for (const item of newItems) {
-      notifiedIds.push(item.id);
-    }
   } catch (e) {
     Logger.log("Notify error (LINE): " + (e && e.stack ? e.stack : e));
+  }
+  for (const indexes of sentIndexes) {
+    for (const index of indexes) {
+      notifiedIds.push(newItems[index].id);
+    }
   }
 
   // 送信成功した記事 ID を既読として保存（未送信分は次回リトライ対象に残す）
@@ -340,34 +344,52 @@ function buildItemMessage(item, feedUrl) {
 
 /**
  * LINE Messaging API へのメッセージ送信 (push) をチャンク分割で実行
+ * 途中で push が失敗した場合に「どの記事まで届いたか」を判定できるよう、
+ * push が成功するたびに、その push へ含めた記事 index（messages の添字）を
+ * 呼び出し側の `sentIndexes` に積む（例外が出ても積み上がった分は残る）。
  * @param {string} channelAccessToken LINE_CHANNEL_ACCESS_TOKEN
  * @param {string} targetId LINE_TARGET_ID (ユーザー/グループ/トークルーム ID)
  * @param {string[]} messages 各記事の通知メッセージ配列
+ * @param {number[][]} sentIndexes 成功した push ごとに記事 index を積む配列（呼び出し側が用意）
  */
-function postToLineInChunks(channelAccessToken, targetId, messages) {
+function postToLineInChunks(channelAccessToken, targetId, messages, sentIndexes) {
   const sep = "\n\n";
   const chunks = [];
+  const chunkIndexes = []; // chunks と対応。chunks[n] に入る記事の index
   let buffer = "";
-  for (const rawMsg of messages) {
-    const msg = normalizeLineMessage(rawMsg, LINE_MAX_TEXT_LENGTH);
+  let bufferIndexes = [];
+  for (let index = 0; index < messages.length; index++) {
+    const msg = normalizeLineMessage(messages[index], LINE_MAX_TEXT_LENGTH);
     if (!msg) continue;
 
     const joined = buffer ? buffer + sep + msg : msg;
     // LINE_MAX_TEXT_LENGTH を超える場合は新しいチャンクへ
     if (joined.length > LINE_MAX_TEXT_LENGTH) {
-      if (buffer) chunks.push(buffer);
+      if (buffer) {
+        chunks.push(buffer);
+        chunkIndexes.push(bufferIndexes);
+      }
       buffer = msg;
+      bufferIndexes = [index];
     } else {
       buffer = joined;
+      bufferIndexes.push(index);
     }
   }
-  if (buffer) chunks.push(buffer);
+  if (buffer) {
+    chunks.push(buffer);
+    chunkIndexes.push(bufferIndexes);
+  }
 
   // LINE_MAX_MESSAGES_PER_PUSH 件ずつ 1 push にまとめて送信
   for (let i = 0; i < chunks.length; i += LINE_MAX_MESSAGES_PER_PUSH) {
     if (i > 0) Utilities.sleep(LINE_CHUNK_INTERVAL_MS);
-    const batch = chunks.slice(i, i + LINE_MAX_MESSAGES_PER_PUSH);
-    postToLine(channelAccessToken, targetId, batch);
+    const batchIndexes = [];
+    for (let j = i; j < Math.min(i + LINE_MAX_MESSAGES_PER_PUSH, chunks.length); j++) {
+      batchIndexes.push.apply(batchIndexes, chunkIndexes[j]);
+    }
+    postToLine(channelAccessToken, targetId, chunks.slice(i, i + LINE_MAX_MESSAGES_PER_PUSH));
+    sentIndexes.push(batchIndexes); // 送れたぶんだけ積む（途中で失敗しても残す）
   }
 }
 

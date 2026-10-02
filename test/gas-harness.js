@@ -21,8 +21,10 @@ const EXPORTS = [
  * GAS のグローバルを素のオブジェクトで差し替えて Code.js を読み込む。
  * `root` に関数を渡すと、fetch のたびにその戻り値を XML ツリーとして使う
  * （テスト中でフィードに記事を足すため）。
+ * `source` を渡すと `../Code.js` ではなくその文字列を評価する（定数を差し替えて
+ * processFeed を複数 push させるケースの検証に使う）。
  */
-export function loadGas({ properties = {}, fetch, root, log } = {}) {
+export function loadGas({ properties = {}, fetch, root, log, source = SOURCE } = {}) {
   const store = new Map(Object.entries(properties));
   const noFetch = () => {
     throw new Error("UrlFetchApp.fetch がスタブされていません");
@@ -46,7 +48,7 @@ export function loadGas({ properties = {}, fetch, root, log } = {}) {
     },
   };
   const names = Object.keys(gas);
-  const api = new Function(...names, `${SOURCE}\nreturn { ${EXPORTS.join(", ")} };`)(
+  const api = new Function(...names, `${source}\nreturn { ${EXPORTS.join(", ")} };`)(
     ...names.map((name) => gas[name]),
   );
   return { api, get: (key) => store.get(key) };
