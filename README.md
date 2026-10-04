@@ -4,8 +4,6 @@
 [![Google Apps Script](https://img.shields.io/badge/Runtime-Google_Apps_Script-4285F4?style=flat-square&logo=google)](https://developers.google.com/apps-script)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 
-[English](README.md) | [日本語 (Japanese)](README.ja.md)
-
 A lightweight Google Apps Script (GAS) service that monitors RSS/Atom feeds and dispatches real-time notifications to **LINE**.
 
 ---
@@ -135,7 +133,6 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 ├── Code.js              # Main GAS application script
 ├── appsscript.json      # Google Apps Script manifest
 ├── README.md            # English documentation
-├── README.ja.md         # Japanese documentation
 ├── LICENSE              # MIT license
 ├── docs/                # Architecture and visualization assets
 │   ├── index.html       # GitHub Pages root (redirects to architecture.html)
