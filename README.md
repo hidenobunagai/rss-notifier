@@ -138,7 +138,7 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 │   ├── index.html       # GitHub Pages root (redirects to architecture.html)
 │   ├── architecture.html# Interactive architecture diagram
 │   ├── architecture.json# Archify specification schema
-│   └── architecture.png # Static diagram capture
+│   └── architecture.png # archify PNG export (Export > PNG)
 ├── test/                # Local test suite (`bun test`)
 └── .claspignore         # Limits `clasp push` to GAS files (see below)
 ```
