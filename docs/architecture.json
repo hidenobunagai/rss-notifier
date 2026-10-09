@@ -226,7 +226,11 @@
       "to": "rss_sources",
       "label": "UrlFetchApp",
       "fromSide": "bottom",
-      "toSide": "right"
+      "toSide": "right",
+      "labelAt": [
+        214,
+        455
+      ]
     },
     {
       "id": "parse-stream",
