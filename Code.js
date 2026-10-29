@@ -119,13 +119,22 @@ function parseSeenIds(raw) {
 }
 
 /**
- * 既読 ID に含まれない新着記事のみを抽出する
+ * 既読 ID に含まれない新着記事のみを抽出する（同一実行内での重複も畳む）
+ * Filters new items not in seenIds, deduplicating identical IDs within the same run.
  * @param {Array<{id: string, [key: string]: any}>} items
  * @param {string[]} seenIds
  * @returns {Array<{id: string, [key: string]: any}>}
  */
 function selectNewItems(items, seenIds) {
-  return items.filter((it) => !seenIds.includes(it.id));
+  const seenSet = new Set(seenIds);
+  const pickedIds = new Set();
+  return items.filter((it) => {
+    if (seenSet.has(it.id) || pickedIds.has(it.id)) {
+      return false;
+    }
+    pickedIds.add(it.id);
+    return true;
+  });
 }
 
 /**

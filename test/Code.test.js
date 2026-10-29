@@ -253,6 +253,32 @@ describe("processFeed: ID ベースの既読", () => {
     expect(JSON.parse(get("seenIds:" + FEED)).length).toBe(12);
   });
 
+  test("同一フィード内に重複記事がある場合、1度だけ通知され上限5件の枠を消費しない", () => {
+    const captured = [];
+    const items = [
+      { title: "A1", link: `${FEED}/1`, guid: "a1", pubDate: "Tue, 01 Sep 2026 00:00:00 GMT" },
+      { title: "A1", link: `${FEED}/1`, guid: "a1", pubDate: "Tue, 01 Sep 2026 00:00:00 GMT" },
+      { title: "A2", link: `${FEED}/2`, guid: "a2", pubDate: "Tue, 02 Sep 2026 00:00:00 GMT" },
+      { title: "A3", link: `${FEED}/3`, guid: "a3", pubDate: "Tue, 03 Sep 2026 00:00:00 GMT" },
+      { title: "A3", link: `${FEED}/3`, guid: "a3", pubDate: "Tue, 03 Sep 2026 00:00:00 GMT" },
+      { title: "A4", link: `${FEED}/4`, guid: "a4", pubDate: "Tue, 04 Sep 2026 00:00:00 GMT" },
+      { title: "A5", link: `${FEED}/5`, guid: "a5", pubDate: "Tue, 05 Sep 2026 00:00:00 GMT" },
+      { title: "A6", link: `${FEED}/6`, guid: "a6", pubDate: "Tue, 06 Sep 2026 00:00:00 GMT" },
+    ];
+    const root = rss(items);
+    const { api, get } = loadGas({ properties: LINE_SETUP, fetch: okFetch(captured), root });
+
+    api.processFeed(FEED);
+    const titles = sentTitles(captured);
+    // 重複記事のタイトルが LINE 送信に1回だけ現れ、重複が上限枠を食わず相異なる古い順の5件が初回で送られる
+    expect(titles).toEqual(["A1", "A2", "A3", "A4", "A5"]);
+
+    // 保存された seenIds に重複が無いこと
+    const stored = JSON.parse(get("seenIds:" + FEED));
+    expect(stored).toEqual(["a1", "a2", "a3", "a4", "a5"]);
+    expect(new Set(stored).size).toBe(stored.length);
+  });
+
   test("移行: lastSeen だけがあるインストールは既存記事を再通知せず、以降の新着は通知する", () => {
     const captured = [];
     const items = rawItems(3);
@@ -376,6 +402,35 @@ describe("parseSeenIds / selectNewItems / mergeSeenIds", () => {
     expect(api.selectNewItems(items, ["y"]).map((it) => it.id)).toEqual(["x", "z"]);
     expect(api.selectNewItems(items, []).length).toBe(3);
     expect(api.selectNewItems(items, ["x", "y", "z"])).toEqual([]);
+  });
+
+  test("selectNewItems は同一フィード内の重複記事を最初の1件だけに絞り、seenIds にある記事は除外する", () => {
+    const { api } = loadGas();
+    const items = [
+      { id: "a", title: "first a" },
+      { id: "b", title: "first b" },
+      { id: "a", title: "second a" },
+      { id: "c", title: "first c" },
+      { id: "b", title: "second b" },
+    ];
+    // seenIds に "c" があるとき、"c" は除外され、重複する "a" と "b" は最初の1件だけが残る
+    const result = api.selectNewItems(items, ["c"]);
+    expect(result).toEqual([
+      { id: "a", title: "first a" },
+      { id: "b", title: "first b" },
+    ]);
+
+    // seenIds が空配列でも重複は最初の1件だけに絞られる
+    expect(api.selectNewItems(items, [])).toEqual([
+      { id: "a", title: "first a" },
+      { id: "b", title: "first b" },
+      { id: "c", title: "first c" },
+    ]);
+
+    // seenIds に重複値が含まれていても正常に動作する
+    expect(api.selectNewItems(items, ["c", "c", "a"])).toEqual([
+      { id: "b", title: "first b" },
+    ]);
   });
 
   test("mergeSeenIds は重複を畳み込み、直近 50 件に切り詰める", () => {
