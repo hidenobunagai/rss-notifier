@@ -1,6 +1,7 @@
 // Code.js（GAS）をテストから読み込むための最小ハーネス。
 // Code.js のトップレベルは定数と関数宣言だけで GAS API を呼ばないので、
 // new Function に GAS グローバルのスタブを渡して評価できる。
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const SOURCE = readFileSync(new URL("../Code.js", import.meta.url), "utf8");
@@ -15,6 +16,7 @@ const EXPORTS = [
   "parseSeenIds",
   "selectNewItems",
   "mergeSeenIds",
+  "seenKey",
   "resolveLink",
 ];
 
@@ -40,7 +42,16 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE } =
       }),
     },
     UrlFetchApp: { fetch: fetch || noFetch },
-    Utilities: { sleep: () => {}, formatDate: (date, tz, fmt) => date.toISOString() },
+    Utilities: {
+      sleep: () => {},
+      formatDate: (date, tz, fmt) => date.toISOString(),
+      DigestAlgorithm: { MD5: "md5" },
+      Charset: { UTF_8: "utf8" },
+      // GAS returns Java bytes, i.e. signed numbers in -128..127
+      computeDigest: (algorithm, value, charset) =>
+        Array.from(createHash(algorithm).update(value, charset).digest(), (b) => (b > 127 ? b - 256 : b)),
+      base64EncodeWebSafe: (bytes) => Buffer.from(bytes.map((b) => b & 255)).toString("base64url").padEnd(24, "="),
+    },
     Session: { getScriptTimeZone: () => "Asia/Tokyo" },
     XmlService: {
       // 実際の XML 解析はせず、テストが組み立てた要素ツリーをそのまま返す

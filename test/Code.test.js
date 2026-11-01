@@ -12,6 +12,9 @@ const LINE_SETUP = {
   feedUrls: JSON.stringify([FEED]),
 };
 
+// Stored seenIds are hashed; compare them against hashed raw IDs.
+const keysOf = (api, ids) => ids.map((id) => api.seenKey(id));
+
 // LINE 送信（push エンドポイント宛）を拾い、記事タイトルの配列を返す
 function sentTitles(captured) {
   return captured
@@ -150,7 +153,7 @@ describe("processFeed: ID ベースの既読", () => {
     expect([...first, ...second]).toEqual(rawItems(10).map((it) => it.title));
 
     // 既読 ID も 10 件分が保存される
-    expect(JSON.parse(get("seenIds:" + FEED)).sort()).toEqual(rawItems(10).map((it) => it.guid).sort());
+    expect(JSON.parse(get("seenIds:" + FEED)).sort()).toEqual(keysOf(api, rawItems(10).map((it) => it.guid)).sort());
   });
 
   test("② pubDate が無いフィードでも、新しい記事が届けば通知される", () => {
@@ -201,7 +204,7 @@ describe("processFeed: ID ベースの既読", () => {
     const { api, get } = loadGas({ properties: LINE_SETUP, fetch: okFetch(captured), root });
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual(["A1", "A2", "A3"]);
-    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(["a1", "a2", "a3"]);
+    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, ["a1", "a2", "a3"]));
 
     captured.length = 0;
     api.processFeed(FEED);
@@ -242,7 +245,7 @@ describe("processFeed: ID ベースの既読", () => {
     expect(pushCount).toBe(2);
 
     // 届いた 5 件だけが既読に入る
-    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(rawItems(5).map((it) => it.guid));
+    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, rawItems(5).map((it) => it.guid)));
 
     // 2 回目: 記事 6〜12 だけが再送される（1 チャンク目は再送されない）
     failOnce = false;
@@ -275,8 +278,57 @@ describe("processFeed: ID ベースの既読", () => {
 
     // 保存された seenIds に重複が無いこと
     const stored = JSON.parse(get("seenIds:" + FEED));
-    expect(stored).toEqual(["a1", "a2", "a3", "a4", "a5"]);
+    expect(stored).toEqual(keysOf(api, ["a1", "a2", "a3", "a4", "a5"]));
     expect(new Set(stored).size).toBe(stored.length);
+  });
+
+  // Regression: feeds longer than the stored read state used to cycle items out
+  // of seenIds and re-notify them on every run.
+  for (const [label, count, guidPad] of [
+    ["60 items with short IDs", 60, 3],
+    ["40 items with 200-char IDs", 40, 200],
+    ["250 items", 250, 3],
+  ]) {
+    test(`a static feed of ${label} sends nothing after markCurrentAsRead-equivalent baseline`, () => {
+      const captured = [];
+      const items = Array.from({ length: count }, (_, i) => ({
+        title: `T${i}`,
+        link: `${FEED}/${i}`,
+        guid: "g" + String(i).padStart(guidPad, "x"),
+        pubDate: new Date(Date.UTC(2026, 0, 1) + i * 3600e3).toUTCString(),
+      }));
+      const { api: base } = loadGas();
+      const tracked = items.slice(-200).map((it) => it.guid);
+      const seen = base.mergeSeenIds([], tracked, tracked);
+      const { api } = loadGas({
+        properties: { ...LINE_SETUP, ["seenIds:" + FEED]: JSON.stringify(seen) },
+        fetch: okFetch(captured),
+        root: () => rss(items),
+      });
+      for (let run = 0; run < 20; run++) api.processFeed(FEED);
+      expect(sentTitles(captured)).toEqual([]);
+
+      // A new article is still delivered exactly once
+      items.push({ title: "NEW", link: `${FEED}/new`, guid: "new", pubDate: "Fri, 01 Jan 2027 00:00:00 GMT" });
+      for (let run = 0; run < 3; run++) api.processFeed(FEED);
+      expect(sentTitles(captured)).toEqual(["NEW"]);
+    });
+  }
+
+  test("a legacy raw-ID read state is honoured without re-notifying", () => {
+    const captured = [];
+    const items = rawItems(3);
+    const { api, get } = loadGas({
+      properties: { ...LINE_SETUP, ["seenIds:" + FEED]: JSON.stringify(["a1", "a2", "a3"]) },
+      fetch: okFetch(captured),
+      root: () => rss(items),
+    });
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual([]);
+    items.push({ title: "A4", link: `${FEED}/4`, guid: "a4", pubDate: "Fri, 04 Sep 2026 00:00:00 GMT" });
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(["A4"]);
+    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, ["a1", "a2", "a3", "a4"]));
   });
 
   test("移行: lastSeen だけがあるインストールは既存記事を再通知せず、以降の新着は通知する", () => {
@@ -290,7 +342,7 @@ describe("processFeed: ID ベースの既読", () => {
 
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual([]); // lastSeen 以前の記事は既読として引き継がれる
-    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(["a1", "a2", "a3"]);
+    expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, ["a1", "a2", "a3"]));
 
     items.push({ title: "A4", link: `${FEED}/4`, guid: "a4", pubDate: "Fri, 04 Sep 2026 00:00:00 GMT" });
     captured.length = 0;
@@ -433,32 +485,33 @@ describe("parseSeenIds / selectNewItems / mergeSeenIds", () => {
     ]);
   });
 
-  test("mergeSeenIds は重複を畳み込み、直近 50 件に切り詰める", () => {
+  test("mergeSeenIds stores hashed keys, collapses duplicates and accepts legacy raw IDs", () => {
     const { api } = loadGas();
-    expect(api.mergeSeenIds(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"]);
-
-    const sixty = Array.from({ length: 60 }, (_, i) => `id${i}`);
-    const merged = api.mergeSeenIds([], sixty);
-    expect(merged.length).toBe(50); // Script Properties の 1 値あたりのサイズ上限に対する余裕
-    expect(merged[0]).toBe("id10");
-    expect(merged[49]).toBe("id59");
+    const k = (ids) => keysOf(api, ids);
+    expect(api.mergeSeenIds(["a", "b"], ["b", "c"])).toEqual(k(["a", "b", "c"]));
+    expect(api.mergeSeenIds([], ["a1", "a1", "a2"])).toEqual(k(["a1", "a2"]));
+    // Legacy raw IDs and their hashed form are the same entry
+    expect(api.mergeSeenIds(["a1", api.seenKey("a1")], ["a2"])).toEqual(k(["a1", "a2"]));
   });
 
-  test("mergeSeenIds は notifiedIds 内の重複も畳む", () => {
+  test("mergeSeenIds keeps every in-feed key and drops the oldest history first", () => {
     const { api } = loadGas();
-    // フィード内に同じ id の記事が複数あると notifiedIds 自体に重複が入る
-    expect(api.mergeSeenIds([], ["a1", "a1", "a2"])).toEqual(["a1", "a2"]);
-    expect(api.mergeSeenIds(["a1", "a1"], ["a1", "a2"])).toEqual(["a1", "a2"]);
-  });
-
-  test("mergeSeenIds は長い ID でも JSON を保存上限内に収める（新しい方を残す）", () => {
-    const { api } = loadGas();
-    // 1 件 300 字超 × 50 件 = 16KB 超。Script Properties の 1 値 9KB 制限に収める必要がある
-    const longIds = Array.from({ length: 50 }, (_, i) => `https://example.com/${i}/` + "a".repeat(300));
-    const merged = api.mergeSeenIds([], longIds);
+    const feed = Array.from({ length: 200 }, (_, i) => `id${i}`);
+    const history = Array.from({ length: 30 }, (_, i) => `gone${i}`);
+    const merged = api.mergeSeenIds(history, feed, feed);
+    expect(merged.length).toBe(200);
+    expect(merged).toEqual(keysOf(api, feed)); // history no longer fits, the feed always does
     expect(JSON.stringify(merged).length).toBeLessThanOrEqual(6000);
-    expect(merged[merged.length - 1]).toBe(longIds[49]);
-    expect(merged.length).toBeGreaterThan(0);
+
+    // With room to spare, recent history is kept ahead of the in-feed keys
+    const small = api.mergeSeenIds(history, ["x"], ["x"]);
+    expect(small).toEqual(keysOf(api, [...history, "x"]));
+  });
+
+  test("selectNewItems treats legacy raw IDs and hashed keys alike", () => {
+    const { api } = loadGas();
+    const items = [{ id: "x" }, { id: "y" }];
+    expect(api.selectNewItems(items, [api.seenKey("x"), "y"])).toEqual([]);
   });
 });
 

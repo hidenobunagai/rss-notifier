@@ -14,10 +14,12 @@ const PROPERTY_LINE_CHANNEL_ACCESS_TOKEN = "lineChannelAccessToken";
 const PROPERTY_LINE_TARGET_ID = "lineTargetId";
 const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列（初回移行と診断用に保持。記事選別には不使用）
 const PROPERTY_SEEN_IDS_PREFIX = "seenIds:"; // seenIds:<feedUrl> = 通知済み記事 ID の JSON 配列
-const MAX_SEEN_IDS = 50; // seenIds に残す件数上限
-// Script Properties は 1 値あたり 9KB まで。長い URL のフィードでも保存が失敗しないよう
-// 件数だけでなく JSON 文字列の長さでも切る（保存に失敗すると毎回同じ記事を再通知し続ける）
+// Only the newest MAX_SEEN_IDS items of a feed are tracked; older items are ignored.
+// IDs are stored as short hashes (seenKey) so 200 keys always fit the JSON budget below.
+const MAX_SEEN_IDS = 200;
+// Script Properties allow 9KB per value. 200 hashed keys take about 5.4KB.
 const MAX_SEEN_IDS_JSON_LENGTH = 6000;
+const SEEN_KEY_PREFIX = "h:"; // marks a hashed key; entries without it are legacy raw IDs
 const PROPERTY_FEED_URLS = "feedUrls"; // JSON 配列で保存
 const MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（スパム対策）
 // LINE Messaging API 関連 (LINE Notify は 2025/3 廃止のため非採用)
@@ -79,10 +81,9 @@ function markCurrentAsRead() {
       const items = fetchFeedItems(url);
       if (!items || !items.length) continue;
       items.sort((a, b) => a.date - b.date);
-      const ids = mergeSeenIds(
-        [],
-        items.map((it) => it.id),
-      );
+      const tracked = trackedItems(items);
+      const trackedIds = tracked.map((it) => it.id);
+      const ids = mergeSeenIds([], trackedIds, trackedIds);
       if (ids.length > 0) {
         props.setProperty(PROPERTY_SEEN_IDS_PREFIX + url, JSON.stringify(ids));
       }
@@ -119,47 +120,92 @@ function parseSeenIds(raw) {
 }
 
 /**
- * 既読 ID に含まれない新着記事のみを抽出する（同一実行内での重複も畳む）
- * Filters new items not in seenIds, deduplicating identical IDs within the same run.
+ * Hashes an item ID into the compact key stored in seenIds.
+ * @param {string} id
+ * @returns {string}
+ */
+function seenKey(id) {
+  const digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.MD5,
+    String(id),
+    Utilities.Charset.UTF_8,
+  );
+  return SEEN_KEY_PREFIX + Utilities.base64EncodeWebSafe(digest).replace(/=+$/, "");
+}
+
+/**
+ * Normalizes a stored seenIds entry to a hashed key (legacy entries hold raw IDs).
+ * @param {string} entry
+ * @returns {string}
+ */
+function toSeenKey(entry) {
+  return entry.startsWith(SEEN_KEY_PREFIX) ? entry : seenKey(entry);
+}
+
+/**
+ * Keeps only the newest MAX_SEEN_IDS items (items must be sorted oldest first).
+ * Every tracked item's key then fits in seenIds, so a long feed cannot cycle
+ * items out of the read state and re-notify them.
  * @param {Array<{id: string, [key: string]: any}>} items
- * @param {string[]} seenIds
+ * @returns {Array<{id: string, [key: string]: any}>}
+ */
+function trackedItems(items) {
+  return items.slice(-MAX_SEEN_IDS);
+}
+
+/**
+ * Filters items whose ID is not in seenIds, collapsing repeated IDs within the run.
+ * @param {Array<{id: string, [key: string]: any}>} items
+ * @param {string[]} seenIds stored entries (hashed keys or legacy raw IDs)
  * @returns {Array<{id: string, [key: string]: any}>}
  */
 function selectNewItems(items, seenIds) {
-  const seenSet = new Set(seenIds);
-  const pickedIds = new Set();
+  const seenSet = new Set(seenIds.map(toSeenKey));
+  const pickedKeys = new Set();
   return items.filter((it) => {
-    if (seenSet.has(it.id) || pickedIds.has(it.id)) {
+    const key = seenKey(it.id);
+    if (seenSet.has(key) || pickedKeys.has(key)) {
       return false;
     }
-    pickedIds.add(it.id);
+    pickedKeys.add(key);
     return true;
   });
 }
 
 /**
- * 既読 ID に今回通知した ID をマージし、保存上限まで切り詰める（新しい方を残す）
- * @param {string[]} seenIds
- * @param {string[]} notifiedIds
- * @returns {string[]}
+ * Builds the seenIds to store after a run.
+ * Keys of items still in the feed are always kept. Keys of items that left the
+ * feed are kept as history (oldest dropped first) while they fit, so an item that
+ * briefly drops out and comes back is not notified again.
+ * @param {string[]} seenIds stored entries (hashed keys or legacy raw IDs)
+ * @param {string[]} notifiedIds raw IDs notified in this run
+ * @param {string[]} [feedIds] raw IDs of the tracked items currently in the feed
+ * @returns {string[]} hashed keys
  */
-function mergeSeenIds(seenIds, notifiedIds) {
-  // 通知済み ID どうしの重複を先に畳む（フィード側に同じ id の記事が複数あると
-  // notifiedIds に重複が入り、MAX_SEEN_IDS / JSON 長の上限を余計に食う）
-  const unique = Array.from(new Set(notifiedIds));
-  const filtered = seenIds.filter((id) => !unique.includes(id));
-  const merged = filtered.concat(unique).slice(-MAX_SEEN_IDS);
-  while (merged.length > 1 && JSON.stringify(merged).length > MAX_SEEN_IDS_JSON_LENGTH) {
-    merged.shift(); // 長い ID のフィードでは古い方から落とす
+function mergeSeenIds(seenIds, notifiedIds, feedIds = []) {
+  const storedKeys = seenIds.map(toSeenKey);
+  const notifiedKeys = notifiedIds.map(seenKey);
+  const known = new Set(storedKeys.concat(notifiedKeys));
+  const inFeed = Array.from(new Set(feedIds.map(seenKey))).filter((key) => known.has(key));
+  const inFeedSet = new Set(inFeed);
+  const history = Array.from(new Set(storedKeys.concat(notifiedKeys))).filter(
+    (key) => !inFeedSet.has(key),
+  );
+  const merged = history.concat(inFeed);
+  let drop = Math.min(Math.max(0, merged.length - MAX_SEEN_IDS), history.length);
+  while (
+    drop < history.length &&
+    JSON.stringify(merged.slice(drop)).length > MAX_SEEN_IDS_JSON_LENGTH
+  ) {
+    drop++;
   }
-  return merged;
+  return merged.slice(drop);
 }
 
 /**
- * 過去の日時ウォーターマーク (lastSeen) から既読 ID 配列へ移行する。
- * 移行元の記事が保存上限より多い場合、あふれた古い記事は次回以降に未読として
- * 扱われる（1 回だけの再通知。フィードの保持件数は通常これを下回る）
- * @param {Array<{id: string, date: Date, [key: string]: any}>} items
+ * Migrates the old date watermark (lastSeen) to seenIds: items dated at or
+ * before the watermark count as read.
+ * @param {Array<{id: string, date: Date, [key: string]: any}>} items tracked items
  * @param {Date|null} lastSeenDate
  * @returns {string[]}
  */
@@ -170,6 +216,7 @@ function migrateSeenIds(items, lastSeenDate) {
   return mergeSeenIds(
     [],
     items.filter((it) => it.date <= lastSeenDate).map((it) => it.id),
+    items.map((it) => it.id),
   );
 }
 
@@ -203,8 +250,9 @@ function processFeed(feedUrl) {
     return;
   }
 
-  // 古い→新しい順に並べ替え
+  // Oldest first, then keep only the newest MAX_SEEN_IDS items
   items.sort((a, b) => a.date - b.date);
+  items = trackedItems(items);
 
   const props = getScriptProperties();
   const seenIds = loadSeenIds(props, feedUrl, items);
@@ -248,7 +296,11 @@ function processFeed(feedUrl) {
   }
 
   // 送信成功した記事 ID を既読として保存（未送信分は次回リトライ対象に残す）
-  const mergedSeenIds = mergeSeenIds(seenIds, notifiedIds);
+  const mergedSeenIds = mergeSeenIds(
+    seenIds,
+    notifiedIds,
+    items.map((it) => it.id),
+  );
   if (mergedSeenIds.length > 0) {
     props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(mergedSeenIds));
   }
