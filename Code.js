@@ -14,7 +14,9 @@
 // to "all current articles read" (it also drops articles still waiting to be sent).
 const PROPERTY_LINE_CHANNEL_ACCESS_TOKEN = "lineChannelAccessToken";
 const PROPERTY_LINE_TARGET_ID = "lineTargetId";
-const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列（初回移行と診断用に保持。記事選別には不使用）
+// Legacy: lastSeen:<feedUrl> = ISO date watermark from before ID-based read state.
+// Only read once to migrate to seenIds, then deleted; never written.
+const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:";
 const PROPERTY_SEEN_IDS_PREFIX = "seenIds:"; // seenIds:<feedUrl> = 通知済み記事 ID の JSON 配列
 // Only the newest MAX_SEEN_IDS items of a feed are tracked; older items are ignored.
 // IDs are stored as short hashes (seenKey) so 200 keys always fit the JSON budget below.
@@ -82,13 +84,8 @@ function markFeedsAsRead(feedUrls) {
       const tracked = trackedItems(items);
       const trackedIds = tracked.map((it) => it.id);
       const ids = mergeSeenIds([], trackedIds, trackedIds);
-      if (ids.length > 0) {
-        props.setProperty(PROPERTY_SEEN_IDS_PREFIX + url, JSON.stringify(ids));
-      }
-      const latest = items[items.length - 1].date;
-      if (latest && latest.getTime && !isNaN(latest.getTime())) {
-        props.setProperty(PROPERTY_LAST_SEEN_PREFIX + url, latest.toISOString());
-      }
+      props.setProperty(PROPERTY_SEEN_IDS_PREFIX + url, JSON.stringify(ids));
+      props.deleteProperty(PROPERTY_LAST_SEEN_PREFIX + url);
     } catch (e) {
       errors.push(url + " -> " + (e && e.stack ? e.stack : e));
     }
@@ -235,21 +232,22 @@ function loadSeenIds(props, feedUrl, items) {
   }
 
   const lastSeenIso = props.getProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl) || "";
-  if (!lastSeenIso) {
+  const lastSeenDate = lastSeenIso ? new Date(lastSeenIso) : null;
+  if (!lastSeenDate || isNaN(lastSeenDate.getTime())) {
     // A feed with no read state (newly added): treat everything currently in it
     // as read instead of sending its backlog. Only later articles are notified.
     const ids = items.map((it) => it.id);
     const baseline = mergeSeenIds([], ids, ids);
     props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(baseline));
+    props.deleteProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl); // drop an unparsable watermark
     Logger.log("New feed, marked " + baseline.length + " current item(s) as read: " + feedUrl);
     return baseline;
   }
 
   // One-time migration from the old date watermark
-  const migrated = migrateSeenIds(items, new Date(lastSeenIso));
-  if (migrated.length > 0) {
-    props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(migrated));
-  }
+  const migrated = migrateSeenIds(items, lastSeenDate);
+  props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(migrated));
+  props.deleteProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl);
   return migrated;
 }
 
@@ -384,15 +382,8 @@ function deliverItems(props, pending) {
       entry.notifiedIds,
       entry.items.map((it) => it.id),
     );
-    if (merged.length > 0) {
-      props.setProperty(PROPERTY_SEEN_IDS_PREFIX + entry.url, JSON.stringify(merged));
-    }
-    if (!sendError) {
-      props.setProperty(
-        PROPERTY_LAST_SEEN_PREFIX + entry.url,
-        entry.newItems[entry.newItems.length - 1].date.toISOString(),
-      );
-    }
+    props.setProperty(PROPERTY_SEEN_IDS_PREFIX + entry.url, JSON.stringify(merged));
+    props.deleteProperty(PROPERTY_LAST_SEEN_PREFIX + entry.url); // leftover from old versions
   }
   if (sendError) {
     throw sendError;

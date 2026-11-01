@@ -455,6 +455,7 @@ describe("processFeed: ID ベースの既読", () => {
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual([]); // lastSeen 以前の記事は既読として引き継がれる
     expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, ["a1", "a2", "a3"]));
+    expect(get("lastSeen:" + FEED)).toBeUndefined(); // the watermark is gone once migrated
 
     items.push({ title: "A4", link: `${FEED}/4`, guid: "a4", pubDate: "Fri, 04 Sep 2026 00:00:00 GMT" });
     captured.length = 0;
