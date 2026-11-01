@@ -81,8 +81,7 @@ function markFeedsAsRead(feedUrls) {
     try {
       const items = fetchFeedItems(url);
       if (!items || !items.length) continue;
-      items.sort((a, b) => a.date - b.date);
-      const tracked = trackedItems(items);
+      const tracked = trackedItems(sortOldestFirst(items));
       const trackedIds = tracked.map((it) => it.id);
       const ids = mergeSeenIds([], trackedIds, trackedIds);
       props.setProperty(PROPERTY_SEEN_IDS_PREFIX + url, JSON.stringify(ids));
@@ -139,6 +138,18 @@ function seenKey(id) {
  */
 function toSeenKey(entry) {
   return entry.startsWith(SEEN_KEY_PREFIX) ? entry : seenKey(entry);
+}
+
+/**
+ * Sorts items oldest first (in place). Ties, including items whose date could
+ * not be parsed (epoch 0), keep the feed's convention of listing the newest
+ * first, so document order decides which of them is newer.
+ * @param {Array<{date: Date, [key: string]: any}>} items
+ * @returns {Array<{date: Date, [key: string]: any}>}
+ */
+function sortOldestFirst(items) {
+  const position = new Map(items.map((it, i) => [it, i]));
+  return items.sort((a, b) => a.date - b.date || position.get(b) - position.get(a));
 }
 
 /**
@@ -362,8 +373,7 @@ function collectNewItems(props, feedUrl) {
   }
 
   // Oldest first, then keep only the newest MAX_SEEN_IDS items
-  items.sort((a, b) => a.date - b.date);
-  items = trackedItems(items);
+  items = trackedItems(sortOldestFirst(items));
 
   const seenIds = loadSeenIds(props, feedUrl, items);
   // Oldest first, capped per feed; the rest is picked up by the next run

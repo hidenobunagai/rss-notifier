@@ -269,10 +269,11 @@ describe("processFeed: ID ベースの既読", () => {
 
   test("② pubDate が無いフィードでも、新しい記事が届けば通知される", () => {
     const captured = [];
+    // Listed newest first, as feeds do; with no dates, that order decides
     const items = [
-      { title: "B1", link: `${FEED}/b1` },
-      { title: "B2", link: `${FEED}/b2` },
       { title: "B3", link: `${FEED}/b3` },
+      { title: "B2", link: `${FEED}/b2` },
+      { title: "B1", link: `${FEED}/b1` },
     ];
     const { api } = loadGas({
       properties: LINE_SETUP,
@@ -283,7 +284,7 @@ describe("processFeed: ID ベースの既読", () => {
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual(["B1", "B2", "B3"]);
 
-    items.push({ title: "B4", link: `${FEED}/b4` });
+    items.unshift({ title: "B4", link: `${FEED}/b4` });
     captured.length = 0;
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual(["B4"]); // dated 1970, yet detected as new by its ID
@@ -473,6 +474,21 @@ describe("processFeed: ID ベースの既読", () => {
     expect(sentTitles(captured)).toEqual(["A3", "A4"]);
   });
 
+  test("an undated feed longer than 200 items still notifies an article added at the top", () => {
+    const captured = [];
+    // Feeds list the newest first; none of these dates parse (epoch 0)
+    const items = Array.from({ length: 250 }, (_, i) => ({ title: `U${i}`, link: `${FEED}/u${i}`, guid: `u${i}` }));
+    const { api } = loadGas({
+      properties: withoutSeen(LINE_SETUP),
+      fetch: okFetch(captured),
+      root: () => rss(items),
+    });
+    api.processFeed(FEED); // baseline
+    items.unshift({ title: "TOP", link: `${FEED}/top`, guid: "top" });
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(["TOP"]);
+  });
+
   test("a legacy raw-ID read state is honoured without re-notifying", () => {
     const captured = [];
     const items = rawItems(3);
@@ -616,7 +632,7 @@ describe("batching across feeds", () => {
     const FEEDS = ["https://a.example.com/feed", "https://b.example.com/feed", "https://c.example.com/feed"];
     const captured = [];
     const roots = Object.fromEntries(
-      FEEDS.map((url, f) => [url, rss([1, 2].map((i) => ({ title: `F${f}-${i}`, guid: `${url}#${i}`, link: `${url}/${i}` })))]),
+      FEEDS.map((url, f) => [url, rss([2, 1].map((i) => ({ title: `F${f}-${i}`, guid: `${url}#${i}`, link: `${url}/${i}` })))]),
     );
     let current = null;
     const fetch = (url, params) => {
