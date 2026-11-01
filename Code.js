@@ -45,7 +45,9 @@ function checkFeeds() {
     }
   }
   if (errors.length) {
-    Logger.log("Errors: \n" + errors.join("\n"));
+    // Throw so the trigger run is marked failed and Apps Script emails the owner;
+    // otherwise an expired token or a dead feed fails silently forever.
+    throw new Error("checkFeeds failed for " + errors.length + " feed(s):\n" + errors.join("\n"));
   }
 }
 
@@ -76,6 +78,7 @@ function markCurrentAsRead() {
     return;
   }
   const props = getScriptProperties();
+  const errors = [];
   for (const url of feedUrls) {
     try {
       const items = fetchFeedItems(url);
@@ -92,8 +95,11 @@ function markCurrentAsRead() {
         props.setProperty(PROPERTY_LAST_SEEN_PREFIX + url, latest.toISOString());
       }
     } catch (e) {
-      Logger.log("markCurrentAsRead error: " + (e && e.stack ? e.stack : e));
+      errors.push(url + " -> " + (e && e.stack ? e.stack : e));
     }
+  }
+  if (errors.length) {
+    throw new Error("markCurrentAsRead failed for " + errors.length + " feed(s):\n" + errors.join("\n"));
   }
 }
 
@@ -278,6 +284,7 @@ function processFeed(feedUrl) {
 
   // ----- LINE 送信 (プレーンテキストをチャンク分割で一括送信) -----
   let lastSuccessDate = null;
+  let sendError = null;
   const notifiedIds = [];
   // push が成功した記事 index。途中で失敗しても、ここまで届いた記事だけは既読にする
   const sentIndexes = [];
@@ -287,7 +294,7 @@ function processFeed(feedUrl) {
     // LINE 成功をもって既読基準にする
     lastSuccessDate = newItems[newItems.length - 1].date;
   } catch (e) {
-    Logger.log("Notify error (LINE): " + (e && e.stack ? e.stack : e));
+    sendError = e; // rethrown after the delivered part is saved as read
   }
   for (const indexes of sentIndexes) {
     for (const index of indexes) {
@@ -309,6 +316,9 @@ function processFeed(feedUrl) {
       PROPERTY_LAST_SEEN_PREFIX + feedUrl,
       lastSuccessDate.toISOString(),
     );
+  }
+  if (sendError) {
+    throw sendError;
   }
 }
 

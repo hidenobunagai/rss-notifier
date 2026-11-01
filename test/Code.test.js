@@ -189,7 +189,7 @@ describe("processFeed: ID ベースの既読", () => {
     };
     const { api } = loadGas({ properties: LINE_SETUP, fetch, root });
 
-    api.processFeed(FEED);
+    expect(() => api.processFeed(FEED)).toThrow("LINE 送信エラー (500)");
     expect(sentTitles(captured)).toEqual([]); // 送信失敗なので既読も進まない
 
     lineCode = 200;
@@ -239,8 +239,8 @@ describe("processFeed: ID ベースの既読", () => {
     const { api, get } = loadGas({ properties: LINE_SETUP, fetch, root: () => rss(items), source });
     const titles = () => items.map((it) => it.title);
 
-    // 1 回目: push#1（記事 1〜5）は届く。push#2（記事 6〜10）が 500 → 例外で catch へ
-    api.processFeed(FEED);
+    // 1 回目: push#1（記事 1〜5）は届く。push#2（記事 6〜10）が 500 → 既読を保存してから例外
+    expect(() => api.processFeed(FEED)).toThrow("LINE 送信エラー (500)");
     expect(sentTitles(captured)).toEqual(titles().slice(0, 5));
     expect(pushCount).toBe(2);
 
@@ -348,6 +348,39 @@ describe("processFeed: ID ベースの既読", () => {
     captured.length = 0;
     api.processFeed(FEED);
     expect(sentTitles(captured)).toEqual(["A4"]);
+  });
+});
+
+describe("error reporting", () => {
+  const feedOk = { getResponseCode: () => 200, getContentText: () => "", getHeaders: () => ({}) };
+  const lineFails = (code) => (url) =>
+    url === LINE_PUSH_URL
+      ? { getResponseCode: () => code, getContentText: () => "invalid token", getHeaders: () => ({}) }
+      : feedOk;
+
+  test("checkFeeds throws when LINE rejects the token, so the trigger run fails visibly", () => {
+    const { api } = loadGas({
+      properties: { ...LINE_SETUP, ["seenIds:" + FEED]: "[]" },
+      fetch: lineFails(401),
+      root: () => rss([{ title: "a", guid: "a", link: `${FEED}/a` }]),
+    });
+    expect(() => api.checkFeeds()).toThrow(/checkFeeds failed for 1 feed\(s\)[\s\S]*\(401\)/);
+  });
+
+  test("checkFeeds keeps processing other feeds before throwing", () => {
+    const OTHER = "https://other.example.com/feed";
+    const captured = [];
+    const fetch = (url, params) => {
+      if (url === FEED) return { getResponseCode: () => 404, getContentText: () => "", getHeaders: () => ({}) };
+      return okFetch(captured)(url, params);
+    };
+    const { api } = loadGas({
+      properties: { ...LINE_SETUP, feedUrls: JSON.stringify([FEED, OTHER]), ["seenIds:" + OTHER]: "[]" },
+      fetch,
+      root: () => rss([{ title: "ok", guid: "ok", link: `${OTHER}/ok` }]),
+    });
+    expect(() => api.checkFeeds()).toThrow("Fetch failed 404");
+    expect(sentTitles(captured)).toEqual(["ok"]);
   });
 });
 

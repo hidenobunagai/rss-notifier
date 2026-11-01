@@ -8,6 +8,7 @@ const SOURCE = readFileSync(new URL("../Code.js", import.meta.url), "utf8");
 
 // テストから呼ぶ関数だけを返す（足すときはここに 1 行足す）
 const EXPORTS = [
+  "checkFeeds",
   "processFeed",
   "fetchFeedItems",
   "safeParseDate",
