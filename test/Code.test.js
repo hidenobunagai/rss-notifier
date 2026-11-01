@@ -14,6 +14,14 @@ const LINE_SETUP = {
   ["seenIds:" + FEED]: "[]",
 };
 
+const rawItemsFor = (n) =>
+  Array.from({ length: n }, (_, i) => ({
+    title: `A${i + 1}`,
+    link: `${FEED}/${i + 1}`,
+    guid: `a${i + 1}`,
+    pubDate: `Tue, ${String(i + 1).padStart(2, "0")} Sep 2026 00:00:00 GMT`,
+  }));
+
 const withoutSeen = (props) =>
   Object.fromEntries(Object.entries(props).filter(([key]) => !key.startsWith("seenIds:")));
 
@@ -413,6 +421,51 @@ describe("processFeed: ID ベースの既読", () => {
       expect(sentTitles(captured)).toEqual(["NEW"]);
     });
   }
+
+  test("upgrading a 50-ID legacy state of a 100-item feed re-sends nothing", () => {
+    const captured = [];
+    const items = Array.from({ length: 100 }, (_, i) => ({
+      title: `T${i}`,
+      link: `${FEED}/${i}`,
+      guid: `g${i}`,
+      pubDate: new Date(Date.UTC(2026, 0, 1) + i * 3600e3).toUTCString(),
+    }));
+    const legacy = items.slice(-50).map((it) => it.guid); // what the old code stored
+    const { api, get } = loadGas({
+      properties: { ...LINE_SETUP, ["seenIds:" + FEED]: JSON.stringify(legacy) },
+      fetch: okFetch(captured),
+      root: () => rss(items),
+    });
+    for (let run = 0; run < 5; run++) api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual([]);
+    expect(JSON.parse(get("seenIds:" + FEED)).every((key) => key.startsWith("h:"))).toBe(true);
+
+    items.push({ title: "NEW", link: `${FEED}/new`, guid: "new", pubDate: "Fri, 01 Jan 2027 00:00:00 GMT" });
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(["NEW"]);
+  });
+
+  test("upgrading a legacy state whose IDs no longer match baselines the feed", () => {
+    const captured = [];
+    const { api } = loadGas({
+      properties: { ...LINE_SETUP, ["seenIds:" + FEED]: JSON.stringify(["old-id-1", "old-id-2"]) },
+      fetch: okFetch(captured),
+      root: () => rss(rawItemsFor(10)),
+    });
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual([]);
+  });
+
+  test("upgrading keeps articles newer than the newest legacy-read one as new", () => {
+    const captured = [];
+    const { api } = loadGas({
+      properties: { ...LINE_SETUP, ["seenIds:" + FEED]: JSON.stringify(["a1", "a2"]) },
+      fetch: okFetch(captured),
+      root: () => rss(rawItemsFor(4)),
+    });
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(["A3", "A4"]);
+  });
 
   test("a legacy raw-ID read state is honoured without re-notifying", () => {
     const captured = [];

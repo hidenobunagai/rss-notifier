@@ -219,6 +219,33 @@ function migrateSeenIds(items, lastSeenDate) {
 }
 
 /**
+ * One-time conversion of a raw-ID read state written by older versions.
+ * Those kept only 50 IDs (fewer with long IDs), and some item IDs are now
+ * derived differently (namespace-aware fields, charset decoding), so matching
+ * the raw IDs alone would re-send old articles. Instead, every tracked item
+ * not newer than the newest item the old state knows is treated as read. If
+ * no tracked item matches at all (or the feed has no dates), matches alone or
+ * a full baseline are used, so the upgrade never sends a backlog.
+ * @param {string[]} legacySeenIds stored entries containing raw IDs
+ * @param {Array<{id: string, date: Date, [key: string]: any}>} items tracked items, oldest first
+ * @returns {string[]} hashed keys
+ */
+function upgradeLegacySeenIds(legacySeenIds, items) {
+  const legacyKeys = new Set(legacySeenIds.map(toSeenKey));
+  const ids = items.map((it) => it.id);
+  const matched = items.filter((it) => legacyKeys.has(seenKey(it.id)));
+  if (!matched.length) {
+    return mergeSeenIds(legacySeenIds, ids, ids); // nothing recognisable: baseline
+  }
+  const newestSeen = Math.max(...matched.map((it) => it.date.getTime()));
+  const readIds =
+    newestSeen > 0
+      ? items.filter((it) => it.date.getTime() <= newestSeen).map((it) => it.id)
+      : matched.map((it) => it.id); // undated feed: no order to infer from
+  return mergeSeenIds(legacySeenIds, readIds, ids);
+}
+
+/**
  * Loads a feed's read state. A feed without one is migrated from the legacy
  * lastSeen watermark, or baselined as "all current items read".
  * @param {GoogleAppsScript.Properties.Properties} props
@@ -229,7 +256,13 @@ function migrateSeenIds(items, lastSeenDate) {
 function loadSeenIds(props, feedUrl, items) {
   const stored = props.getProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl);
   if (stored !== null) {
-    return parseSeenIds(stored);
+    const seenIds = parseSeenIds(stored);
+    if (seenIds.some((entry) => !entry.startsWith(SEEN_KEY_PREFIX))) {
+      const upgraded = upgradeLegacySeenIds(seenIds, items);
+      props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(upgraded));
+      return upgraded;
+    }
+    return seenIds;
   }
 
   const lastSeenIso = props.getProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl) || "";
