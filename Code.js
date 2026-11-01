@@ -771,11 +771,16 @@ function getScriptProperties() {
   return PropertiesService.getScriptProperties();
 }
 
+/**
+ * Text of the first child with this local name (case-insensitive) in the
+ * parent's own namespace. Foreign elements with the same local name, such as
+ * <atom:link> inside an RSS 2.0 item, are skipped.
+ */
 function getChildText(el, name) {
-  const children = el.getChildren();
+  const nsUri = el.getNamespace().getURI();
   const nameLower = (name || "").toLowerCase();
-  for (const child of children) {
-    if (child.getName().toLowerCase() === nameLower) {
+  for (const child of el.getChildren()) {
+    if (child.getName().toLowerCase() === nameLower && child.getNamespace().getURI() === nsUri) {
       return child.getText();
     }
   }

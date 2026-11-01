@@ -74,13 +74,13 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lo
 }
 
 /** GAS XmlService の要素を模した最小オブジェクト */
-export function el(name, text = "", children = [], attrs = {}) {
+export function el(name, text = "", children = [], attrs = {}, nsUri = "") {
   return {
     getName: () => name,
     getText: () => text,
     getChildren: (childName) => children.filter((c) => !childName || c.getName() === childName),
     getChild: (childName) => children.find((c) => c.getName() === childName) || null,
-    getNamespace: () => ({ uri: "" }),
+    getNamespace: () => ({ uri: nsUri, getURI: () => nsUri }),
     getAttribute: (attr) => (attr in attrs ? { getValue: () => attrs[attr] } : null),
   };
 }

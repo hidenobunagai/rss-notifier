@@ -83,6 +83,18 @@ describe("parseRssChannel / fetchFeedItems", () => {
     expect(decodeWith({}, "<rss>")).toEqual(["UTF-8"]);
   });
 
+  test("an <atom:link> inside an RSS 2.0 item does not shadow <link>", () => {
+    const ATOM_NS = "http://www.w3.org/2005/Atom";
+    const item = el("item", "", [
+      el("title", "T"),
+      el("link", "", [], { rel: "self", href: "https://example.com/self" }, ATOM_NS),
+      el("link", "https://example.com/article"),
+    ]);
+    const root = el("rss", "", [el("channel", "", [item])]);
+    const { api } = loadGas({ root, fetch: okFetch() });
+    expect(api.fetchFeedItems(FEED)[0].link).toBe("https://example.com/article");
+  });
+
   test("取得が 4xx / 5xx なら例外にする", () => {
     const root = rss([]);
     const { api } = loadGas({
