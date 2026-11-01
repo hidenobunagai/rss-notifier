@@ -379,7 +379,7 @@ function fetchFeedItems(feedUrl) {
   if (code >= 400) {
     throw new Error("Fetch failed " + code + " for " + feedUrl);
   }
-  const xmlText = res.getContentText();
+  const xmlText = decodeFeedText(res);
   const doc = XmlService.parse(xmlText);
   const root = doc.getRootElement();
   const name = root.getName().toLowerCase();
@@ -393,6 +393,45 @@ function fetchFeedItems(feedUrl) {
   } else {
     throw new Error("Unsupported feed root: " + name);
   }
+}
+
+/**
+ * Decodes a feed response. A charset in Content-Type wins; without one, the
+ * XML declaration's encoding (e.g. Shift_JIS, EUC-JP) is used instead of
+ * silently decoding as UTF-8. Unknown charsets fall back to the default.
+ * @param {GoogleAppsScript.URL_Fetch.HTTPResponse} res
+ * @returns {string}
+ */
+function decodeFeedText(res) {
+  const contentType = getHeaderValue(res.getHeaders(), "Content-Type");
+  const fromHeader = /charset\s*=\s*["']?([\w.:-]+)/i.exec(contentType);
+  let charset = fromHeader ? fromHeader[1] : "";
+  if (!charset) {
+    // ISO-8859-1 maps every byte, so the ASCII declaration reads correctly
+    const head = res.getContentText("ISO-8859-1").slice(0, 300);
+    const declared = /^(?:\u00EF\u00BB\u00BF)?\s*<\?xml[^>]*\bencoding\s*=\s*["']([\w.:-]+)["']/i.exec(head);
+    charset = declared ? declared[1] : "UTF-8";
+  }
+  try {
+    return res.getContentText(charset);
+  } catch (e) {
+    Logger.log("Unknown charset " + charset + ", decoding with the default: " + e);
+    return res.getContentText();
+  }
+}
+
+/**
+ * Looks up an HTTP response header case-insensitively (HTTP/2 sends lower case).
+ * @param {Object<string, string>} headers
+ * @param {string} name
+ * @returns {string}
+ */
+function getHeaderValue(headers, name) {
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(headers || {})) {
+    if (key.toLowerCase() === lower) return String(headers[key]);
+  }
+  return "";
 }
 
 /**

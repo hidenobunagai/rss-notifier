@@ -61,6 +61,28 @@ describe("parseRssChannel / fetchFeedItems", () => {
     ]);
   });
 
+  test("feed text is decoded with the header charset, else the XML declaration, else UTF-8", () => {
+    const decodeWith = (headers, head) => {
+      const calls = [];
+      const fetch = () => ({
+        getResponseCode: () => 200,
+        getHeaders: () => headers,
+        getContentText: (charset) => {
+          calls.push(charset);
+          return charset === "ISO-8859-1" ? head : "";
+        },
+      });
+      const { api } = loadGas({ root: rss([]), fetch });
+      api.fetchFeedItems(FEED);
+      return calls.filter((c) => c !== "ISO-8859-1");
+    };
+    const sjis = '<?xml version="1.0" encoding="Shift_JIS"?><rss>';
+    expect(decodeWith({ "content-type": "text/xml; charset=EUC-JP" }, sjis)).toEqual(["EUC-JP"]);
+    expect(decodeWith({ "Content-Type": "text/xml" }, sjis)).toEqual(["Shift_JIS"]);
+    expect(decodeWith({}, "\u00EF\u00BB\u00BF" + sjis)).toEqual(["Shift_JIS"]);
+    expect(decodeWith({}, "<rss>")).toEqual(["UTF-8"]);
+  });
+
   test("取得が 4xx / 5xx なら例外にする", () => {
     const root = rss([]);
     const { api } = loadGas({
