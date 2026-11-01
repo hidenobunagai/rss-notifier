@@ -10,7 +10,12 @@ const LINE_SETUP = {
   lineChannelAccessToken: "token",
   lineTargetId: "U1234567890",
   feedUrls: JSON.stringify([FEED]),
+  // An empty read state: without one, the first check only baselines the feed
+  ["seenIds:" + FEED]: "[]",
 };
+
+const withoutSeen = (props) =>
+  Object.fromEntries(Object.entries(props).filter(([key]) => !key.startsWith("seenIds:")));
 
 // Stored seenIds are hashed; compare them against hashed raw IDs.
 const keysOf = (api, ids) => ids.map((id) => api.seenKey(id));
@@ -331,11 +336,25 @@ describe("processFeed: ID ベースの既読", () => {
     expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, ["a1", "a2", "a3", "a4"]));
   });
 
+  test("a feed with no read state is baselined on its first check, then notifies new items", () => {
+    const captured = [];
+    const items = rawItems(8);
+    const { api, get } = loadGas({ properties: withoutSeen(LINE_SETUP), fetch: okFetch(captured), root: () => rss(items) });
+
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual([]);
+    expect(JSON.parse(get("seenIds:" + FEED)).length).toBe(8);
+
+    items.push({ title: "A9", link: `${FEED}/9`, guid: "a9", pubDate: "Wed, 09 Sep 2026 00:00:00 GMT" });
+    api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual(["A9"]);
+  });
+
   test("移行: lastSeen だけがあるインストールは既存記事を再通知せず、以降の新着は通知する", () => {
     const captured = [];
     const items = rawItems(3);
     const { api, get } = loadGas({
-      properties: { ...LINE_SETUP, ["lastSeen:" + FEED]: "2026-09-03T00:00:00.000Z" },
+      properties: { ...withoutSeen(LINE_SETUP), ["lastSeen:" + FEED]: "2026-09-03T00:00:00.000Z" },
       fetch: okFetch(captured),
       root: () => rss(items),
     });
@@ -486,7 +505,11 @@ describe("resolveLink: 記事リンクの絶対 URL 解決", () => {
     const root = rss([
       { title: "相対", link: "/blog/1", guid: "g1", pubDate: "Tue, 15 Sep 2026 09:00:00 GMT" },
     ]);
-    const { api } = loadGas({ properties: LINE_SETUP, fetch: okFetch(captured), root });
+    const { api } = loadGas({
+      properties: { ...LINE_SETUP, ["seenIds:" + ATOM_FEED]: "[]" },
+      fetch: okFetch(captured),
+      root,
+    });
     api.processFeed(ATOM_FEED);
     const texts = captured
       .filter((c) => c.url === LINE_PUSH_URL)

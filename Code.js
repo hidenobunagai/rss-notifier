@@ -8,8 +8,10 @@
 //   1. setLineChannelAccessToken('<LINE_CHANNEL_ACCESS_TOKEN>') を実行
 //   2. setLineTargetId('<LINE_TARGET_ID>') を実行
 //   3. setFeedUrls(['https://example.com/feed', ...]) を実行
-//   4. markCurrentAsRead() を実行（既存記事を通知しないようスキップ）
-//   5. createTimeTrigger() を実行
+//   4. createTimeTrigger() を実行
+// A newly added feed's existing articles are marked read on its first check,
+// so only later articles are notified. markCurrentAsRead() resets every feed
+// to "all current articles read" (it also drops articles still waiting to be sent).
 const PROPERTY_LINE_CHANNEL_ACCESS_TOKEN = "lineChannelAccessToken";
 const PROPERTY_LINE_TARGET_ID = "lineTargetId";
 const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:"; // lastSeen:<feedUrl> = ISO 文字列（初回移行と診断用に保持。記事選別には不使用）
@@ -227,10 +229,19 @@ function loadSeenIds(props, feedUrl, items) {
     return parseSeenIds(stored);
   }
 
-  // 過去の日時ウォーターマークからの初回移行
   const lastSeenIso = props.getProperty(PROPERTY_LAST_SEEN_PREFIX + feedUrl) || "";
-  const lastSeenDate = lastSeenIso ? new Date(lastSeenIso) : null;
-  const migrated = migrateSeenIds(items, lastSeenDate);
+  if (!lastSeenIso) {
+    // A feed with no read state (newly added): treat everything currently in it
+    // as read instead of sending its backlog. Only later articles are notified.
+    const ids = items.map((it) => it.id);
+    const baseline = mergeSeenIds([], ids, ids);
+    props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(baseline));
+    Logger.log("New feed, marked " + baseline.length + " current item(s) as read: " + feedUrl);
+    return baseline;
+  }
+
+  // One-time migration from the old date watermark
+  const migrated = migrateSeenIds(items, new Date(lastSeenIso));
   if (migrated.length > 0) {
     props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(migrated));
   }
@@ -712,17 +723,6 @@ function validateSetup() {
 
   if (!config.lineConfigured) {
     warnings.push("通知先が未設定です。LINE の設定を行ってください。");
-  }
-
-  // 既読状態
-  const hasSeenState = feedUrls.some(
-    (url) =>
-      !!getScriptProperties().getProperty(PROPERTY_SEEN_IDS_PREFIX + url) ||
-      !!getScriptProperties().getProperty(PROPERTY_LAST_SEEN_PREFIX + url),
-  );
-  config.hasReadState = hasSeenState;
-  if (feedUrls.length > 0 && !hasSeenState) {
-    warnings.push("既読状態がありません。markCurrentAsRead() を実行すると、既存記事の通知をスキップできます。");
   }
 
   return {
