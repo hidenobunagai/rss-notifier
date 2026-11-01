@@ -43,6 +43,24 @@ describe("parseRssChannel / fetchFeedItems", () => {
     ]);
   });
 
+  test("RSS 1.0 (RDF) items use rdf:about as the ID and dc:date as the date", () => {
+    const root = el("RDF", "", [
+      el("channel", "", [el("title", "Hatena")]),
+      el(
+        "item",
+        "",
+        [el("title", "R1"), el("link", "https://example.com/r1"), el("date", "2026-09-15T09:00:00+09:00")],
+        { about: "https://example.com/r1#about" },
+      ),
+      el("item", "", [el("title", "R2"), el("link", "/r2")]),
+    ]);
+    const { api } = loadGas({ root, fetch: okFetch() });
+    expect(api.fetchFeedItems(FEED)).toEqual([
+      { id: "https://example.com/r1#about", title: "R1", link: "https://example.com/r1", date: new Date("2026-09-15T00:00:00Z") },
+      { id: "https://example.com/r2", title: "R2", link: "https://example.com/r2", date: new Date(0) },
+    ]);
+  });
+
   test("取得が 4xx / 5xx なら例外にする", () => {
     const root = rss([]);
     const { api } = loadGas({

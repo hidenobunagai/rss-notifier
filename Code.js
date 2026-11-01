@@ -386,6 +386,8 @@ function fetchFeedItems(feedUrl) {
 
   if (name === "rss") {
     return parseRssChannel(root.getChild("channel"), feedUrl);
+  } else if (name === "rdf") {
+    return parseRdf(root, feedUrl);
   } else if (name === "feed") {
     return parseAtom(root, feedUrl);
   } else {
@@ -443,19 +445,34 @@ function resolveLink(link, feedUrl) {
 
 // RSS 2.0
 function parseRssChannel(channel, feedUrl) {
-  const items = channel.getChildren("item");
-  const out = [];
-  for (const it of items) {
-    const title = getChildText(it, "title");
-    const link = resolveLink(getChildText(it, "link"), feedUrl);
-    const guid = getChildText(it, "guid");
-    const pubDate =
-      getChildText(it, "pubDate") || getChildTextNS(it, "date", "http://purl.org/dc/elements/1.1/");
-    const date = safeParseDate(pubDate);
-    const id = guid || link || title + "|" + (pubDate || "");
-    out.push({ id, title, link, date });
-  }
-  return out;
+  return channel.getChildren("item").map((it) => parseRssItem(it, feedUrl, getChildText(it, "guid")));
+}
+
+// RSS 1.0 (RDF): <item> elements are children of <rdf:RDF>, identified by rdf:about
+const RDF_NS_URI = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+function parseRdf(root, feedUrl) {
+  const rdfNs = XmlService.getNamespace(RDF_NS_URI);
+  return root
+    .getChildren()
+    .filter((child) => child.getName().toLowerCase() === "item")
+    .map((it) => {
+      const about = it.getAttribute("about", rdfNs);
+      return parseRssItem(it, feedUrl, about ? about.getValue() : "");
+    });
+}
+
+/**
+ * Reads one RSS 1.0 / 2.0 item. The ID falls back from primaryId to the link,
+ * then to title + date.
+ */
+function parseRssItem(it, feedUrl, primaryId) {
+  const title = getChildText(it, "title");
+  const link = resolveLink(getChildText(it, "link"), feedUrl);
+  const pubDate =
+    getChildText(it, "pubDate") || getChildTextNS(it, "date", "http://purl.org/dc/elements/1.1/");
+  const date = safeParseDate(pubDate);
+  const id = primaryId || link || title + "|" + (pubDate || "");
+  return { id, title, link, date };
 }
 
 // Atom 1.0
