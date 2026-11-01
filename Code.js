@@ -322,7 +322,8 @@ function notifyFeedsLocked(feedUrls) {
  * @returns {{url: string, items: Array<object>, seenIds: string[], newItems: Array<object>}|null}
  */
 function collectNewItems(props, feedUrl) {
-  let items = fetchFeedItems(feedUrl);
+  const feed = fetchFeed(feedUrl);
+  let items = feed.items;
   if (!items || !items.length) {
     return null;
   }
@@ -337,7 +338,7 @@ function collectNewItems(props, feedUrl) {
   if (!newItems.length) {
     return null;
   }
-  return { url: feedUrl, items, seenIds, newItems };
+  return { url: feedUrl, title: (feed.title || "").trim(), items, seenIds, newItems };
 }
 
 /**
@@ -359,7 +360,7 @@ function deliverItems(props, pending) {
   for (const entry of pending) {
     entry.notifiedIds = [];
     for (const item of entry.newItems) {
-      messages.push(buildItemMessage(item, entry.url));
+      messages.push(buildItemMessage(item, entry.url, entry.title));
       owners.push({ entry, item });
     }
   }
@@ -399,6 +400,15 @@ function deliverItems(props, pending) {
 }
 
 function fetchFeedItems(feedUrl) {
+  return fetchFeed(feedUrl).items;
+}
+
+/**
+ * Fetches and parses a feed.
+ * @param {string} feedUrl
+ * @returns {{title: string, items: Array<{id: string, title: string, link: string, date: Date}>}}
+ */
+function fetchFeed(feedUrl) {
   const res = UrlFetchApp.fetch(feedUrl, {
     muteHttpExceptions: true,
   });
@@ -412,11 +422,14 @@ function fetchFeedItems(feedUrl) {
   const name = root.getName().toLowerCase();
 
   if (name === "rss") {
-    return parseRssChannel(root.getChild("channel"), feedUrl);
+    const channel = root.getChild("channel");
+    return { title: getChildText(channel, "title"), items: parseRssChannel(channel, feedUrl) };
   } else if (name === "rdf") {
-    return parseRdf(root, feedUrl);
+    const channel = root.getChildren().find((child) => child.getName().toLowerCase() === "channel");
+    return { title: channel ? getChildText(channel, "title") : "", items: parseRdf(root, feedUrl) };
   } else if (name === "feed") {
-    return parseAtom(root, feedUrl);
+    const titleEl = root.getChild("title", root.getNamespace());
+    return { title: titleEl ? titleEl.getText() : "", items: parseAtom(root, feedUrl) };
   } else {
     throw new Error("Unsupported feed root: " + name);
   }
@@ -584,7 +597,7 @@ function parseAtom(root, feedUrl) {
  * 通知メッセージを構築 (LINE 送信用のプレーンテキスト)
  * Markdown 非依存のため LINE でもそのまま表示可能。
  */
-function buildItemMessage(item, feedUrl) {
+function buildItemMessage(item, feedUrl, feedTitle) {
   const title = item.title || "(タイトルなし)";
   const lines = ["【RSS 更新】", `- タイトル: ${title}`];
   if (item.link) lines.push(`- リンク: ${item.link}`);
@@ -592,7 +605,7 @@ function buildItemMessage(item, feedUrl) {
     const tz = Session.getScriptTimeZone() || "Asia/Tokyo";
     lines.push(`- 公開日時: ${Utilities.formatDate(item.date, tz, "yyyy/MM/dd(EEE) HH:mm")}`);
   }
-  lines.push(`- フィード: ${feedUrl}`);
+  lines.push(`- フィード: ${feedTitle || feedUrl}`); // the feed's name, or its URL if it has none
   return lines.join("\n");
 }
 

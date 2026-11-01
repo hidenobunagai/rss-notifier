@@ -509,6 +509,32 @@ describe("validateSetup", () => {
   });
 });
 
+describe("notification text", () => {
+  const texts = (captured) =>
+    captured
+      .filter((c) => c.url === LINE_PUSH_URL)
+      .flatMap((c) => JSON.parse(c.params.payload).messages.map((m) => m.text));
+
+  test("names the feed by its title, falling back to the URL", () => {
+    const item = el("item", "", [el("title", "A"), el("guid", "a"), el("link", `${FEED}/a`)]);
+    const titled = [];
+    loadGas({
+      properties: LINE_SETUP,
+      fetch: okFetch(titled),
+      root: () => el("rss", "", [el("channel", "", [el("title", " My Blog "), item])]),
+    }).api.processFeed(FEED);
+    expect(texts(titled)[0]).toContain("- フィード: My Blog");
+
+    const untitled = [];
+    loadGas({
+      properties: LINE_SETUP,
+      fetch: okFetch(untitled),
+      root: () => el("rss", "", [el("channel", "", [item])]),
+    }).api.processFeed(FEED);
+    expect(texts(untitled)[0]).toContain(`- フィード: ${FEED}`);
+  });
+});
+
 describe("script lock", () => {
   test("a run that cannot get the script lock sends nothing and leaves the read state alone", () => {
     const captured = [];
