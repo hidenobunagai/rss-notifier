@@ -1,12 +1,12 @@
-// Code.js（GAS）をテストから読み込むための最小ハーネス。
-// Code.js のトップレベルは定数と関数宣言だけで GAS API を呼ばないので、
-// new Function に GAS グローバルのスタブを渡して評価できる。
+// Minimal harness that loads Code.js (Apps Script) into tests.
+// Code.js's top level only declares constants and functions and never calls a
+// GAS API, so it can be evaluated with new Function and stubbed GAS globals.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const SOURCE = readFileSync(new URL("../Code.js", import.meta.url), "utf8");
 
-// テストから呼ぶ関数だけを返す（足すときはここに 1 行足す）
+// Functions exposed to the tests (add a line here to expose another)
 const EXPORTS = [
   "checkFeeds",
   "processFeed",
@@ -23,11 +23,13 @@ const EXPORTS = [
 ];
 
 /**
- * GAS のグローバルを素のオブジェクトで差し替えて Code.js を読み込む。
- * `root` に関数を渡すと、fetch のたびにその戻り値を XML ツリーとして使う
- * （テスト中でフィードに記事を足すため）。
- * `source` を渡すと `../Code.js` ではなくその文字列を評価する（定数を差し替えて
- * processFeed を複数 push させるケースの検証に使う）。
+ * Loads Code.js with plain-object stand-ins for the GAS globals.
+ * If `root` is a function, its return value is used as the XML tree on every
+ * fetch (so a test can add articles to the feed between runs).
+ * `source` evaluates that string instead of `../Code.js` (used to change
+ * constants, e.g. to make processFeed need several pushes).
+ * `lockBusy` makes the script lock unavailable; `triggers` lists the handler
+ * names of the project's triggers.
  */
 export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lockBusy = false, triggers = [] } = {}) {
   const store = new Map(Object.entries(properties));
@@ -65,7 +67,7 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lo
     },
     Session: { getScriptTimeZone: () => "Asia/Tokyo" },
     XmlService: {
-      // 実際の XML 解析はせず、テストが組み立てた要素ツリーをそのまま返す
+      // No real XML parsing: returns the element tree the test built
       parse: () => ({ getRootElement: () => (typeof root === "function" ? root() : root) }),
       getNamespace: (uri) => ({ uri }),
     },
@@ -77,7 +79,7 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lo
   return { api, get: (key) => store.get(key), sleeps };
 }
 
-/** GAS XmlService の要素を模した最小オブジェクト */
+/** Minimal stand-in for a GAS XmlService element */
 export function el(name, text = "", children = [], attrs = {}, nsUri = "") {
   return {
     getName: () => name,
@@ -89,7 +91,7 @@ export function el(name, text = "", children = [], attrs = {}, nsUri = "") {
   };
 }
 
-/** RSS 2.0 の <rss><channel><item>… を組み立てる（undefined の要素は入れない） */
+/** Builds <rss><channel><item>... for RSS 2.0 (undefined fields are left out) */
 export function rss(items) {
   const itemNodes = items.map((it) =>
     el(
@@ -106,7 +108,7 @@ export function rss(items) {
   return el("rss", "", [el("channel", "", itemNodes)]);
 }
 
-/** 常に 200 を返す UrlFetchApp.fetch スタブ（送信内容を captured に記録） */
+/** UrlFetchApp.fetch stub that always answers 200 and records each call in `captured` */
 export function okFetch(captured = []) {
   return (url, params) => {
     captured.push({ url, params });

@@ -1,10 +1,10 @@
-# clasp 設定（scriptId を含むため除外）
+# clasp settings (contain the scriptId)
 .clasp.json
 
 # macOS
 .DS_Store
 
-# エディタ
+# Editors
 .vscode/
 *.swp
 

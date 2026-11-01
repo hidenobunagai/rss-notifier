@@ -1,14 +1,14 @@
-// RSS → LINE 通知 (GAS)
-// - フィード更新を検出し、LINE Messaging API に投稿します。
-// - 一度に大量投稿を避けるため送信上限を設けています。
-// - 既読管理は Script Properties に保存します。
+// RSS -> LINE notifier (Google Apps Script)
+// - Detects new feed articles and posts them through the LINE Messaging API.
+// - Caps articles per run so a burst of updates does not flood the chat.
+// - Keeps the read state in Script Properties.
 
-// ===== 設定値 =====
-// 初回セットアップ:
-//   1. setLineChannelAccessToken('<LINE_CHANNEL_ACCESS_TOKEN>') を実行
-//   2. setLineTargetId('<LINE_TARGET_ID>') を実行
-//   3. setFeedUrls(['https://example.com/feed', ...]) を実行
-//   4. createTimeTrigger() を実行
+// ===== Settings =====
+// First-time setup:
+//   1. Run setLineChannelAccessToken('<LINE_CHANNEL_ACCESS_TOKEN>')
+//   2. Run setLineTargetId('<LINE_TARGET_ID>')
+//   3. Run setFeedUrls(['https://example.com/feed', ...])
+//   4. Run createTimeTrigger()
 // A newly added feed's existing articles are marked read on its first check,
 // so only later articles are notified. markCurrentAsRead() resets every feed
 // to "all current articles read" (it also drops articles still waiting to be sent).
@@ -17,24 +17,24 @@ const PROPERTY_LINE_TARGET_ID = "lineTargetId";
 // Legacy: lastSeen:<feedUrl> = ISO date watermark from before ID-based read state.
 // Only read once to migrate to seenIds, then deleted; never written.
 const PROPERTY_LAST_SEEN_PREFIX = "lastSeen:";
-const PROPERTY_SEEN_IDS_PREFIX = "seenIds:"; // seenIds:<feedUrl> = 通知済み記事 ID の JSON 配列
+const PROPERTY_SEEN_IDS_PREFIX = "seenIds:"; // seenIds:<feedUrl> = JSON array of read keys (see seenKey)
 // Only the newest MAX_SEEN_IDS items of a feed are tracked; older items are ignored.
 // IDs are stored as short hashes (seenKey) so 200 keys always fit the JSON budget below.
 const MAX_SEEN_IDS = 200;
 // Script Properties allow 9KB per value. 200 hashed keys take about 5.4KB.
 const MAX_SEEN_IDS_JSON_LENGTH = 6000;
 const SEEN_KEY_PREFIX = "h:"; // marks a hashed key; entries without it are legacy raw IDs
-const PROPERTY_FEED_URLS = "feedUrls"; // JSON 配列で保存
+const PROPERTY_FEED_URLS = "feedUrls"; // JSON array of feed URLs
 const MAX_NOTIFICATIONS_PER_RUN = 5; // max articles per feed per run (anti-spam); the rest waits for the next run
-// LINE Messaging API 関連 (LINE Notify は 2025/3 廃止のため非採用)
+// LINE Messaging API (LINE Notify was shut down in March 2025)
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_MAX_RETRIES = 3;
-const LINE_MAX_TEXT_LENGTH = 5000; // 1メッセージあたりの文字数上限
-const LINE_MAX_MESSAGES_PER_PUSH = 5; // 1 push あたりのメッセージ数上限
-const LINE_CHUNK_INTERVAL_MS = 1000; // レート制限対策: push 間待機 (ms)
+const LINE_MAX_TEXT_LENGTH = 5000; // max characters per text message
+const LINE_MAX_MESSAGES_PER_PUSH = 5; // max messages per push
+const LINE_CHUNK_INTERVAL_MS = 1000; // pause between pushes, and the base retry backoff (ms)
 const LOCK_WAIT_MS = 30 * 1000; // how long a run waits for an overlapping run to finish
 
-// ===== エントリポイント =====
+// ===== Entry points =====
 function checkFeeds() {
   const feedUrls = getFeedUrls();
   if (!feedUrls.length) {
@@ -44,13 +44,13 @@ function checkFeeds() {
   notifyFeeds(feedUrls);
 }
 
-// 時間主導トリガを作成（例: 15分毎）
+// Creates the time-driven trigger (every 15 minutes)
 function createTimeTrigger() {
-  deleteTimeTrigger(); // 二重作成防止（同名の既存トリガを削除）
+  deleteTimeTrigger(); // avoid duplicates: remove existing checkFeeds triggers
   ScriptApp.newTrigger("checkFeeds").timeBased().everyMinutes(15).create();
 }
 
-// 作成済みの時間主導トリガ（checkFeeds）を停止（削除）
+// Stops monitoring by deleting the checkFeeds triggers
 function deleteTimeTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
   let removed = 0;
@@ -63,7 +63,7 @@ function deleteTimeTrigger() {
   Logger.log("Removed triggers: " + removed);
 }
 
-// 初回導入時に現在の最新記事を既読として記録（通知を発生させない）
+// Resets every feed to "all current articles read" without notifying
 function markCurrentAsRead() {
   const feedUrls = getFeedUrls();
   if (!feedUrls.length) {
@@ -95,10 +95,10 @@ function markFeedsAsRead(feedUrls) {
   }
 }
 
-// ===== 既読管理 (ID ベース) =====
+// ===== Read state (ID based) =====
 
 /**
- * 保存された既読 ID の JSON 文字列を解析し、文字列の配列のみを返す
+ * Parses the stored seenIds JSON and returns only its string entries.
  * @param {string|null} raw
  * @returns {string[]}
  */
@@ -219,7 +219,8 @@ function migrateSeenIds(items, lastSeenDate) {
 }
 
 /**
- * 既読 ID 一覧を取得する（未設定時は lastSeen からの初回移行を行う）
+ * Loads a feed's read state. A feed without one is migrated from the legacy
+ * lastSeen watermark, or baselined as "all current items read".
  * @param {GoogleAppsScript.Properties.Properties} props
  * @param {string} feedUrl
  * @param {Array<{id: string, date: Date, [key: string]: any}>} items
@@ -251,7 +252,7 @@ function loadSeenIds(props, feedUrl, items) {
   return migrated;
 }
 
-// ===== 実装本体 =====
+// ===== Feed checking =====
 
 /** Checks a single feed (manual runs and tests); see notifyFeeds. */
 function processFeed(feedUrl) {
@@ -466,13 +467,13 @@ function getHeaderValue(headers, name) {
 }
 
 /**
- * 記事リンクを絶対 URL へ解決する（RSS の <link>・Atom の href が相対の場合の仕様）
- * GAS の V8 には URL クラスが無いので、正規表現 + パス連結で自前実装する
- * （開発者ガイドの「Unavailable APIs」で URL は利用不可と明記されている）。
- * xml:base は見ない。解決できない場合は元の値をそのまま返す。
- * ponytail: WHATWG URL と完全一致はしない（パス内の空セグメントの圧縮・パーセント
- * デコード・ホストの小文字化・空リンクの扱い）。フィードの link は実用上これで足りる。
- * 完全一致が必要になったら whatwg-url 系のポリフィルを入れる。
+ * Resolves an article link against the feed URL (relative RSS <link> / Atom href).
+ * Apps Script's V8 has no URL class (listed under "Unavailable APIs" in the
+ * developer guide), so this uses a regex plus path joining.
+ * xml:base is ignored. Unresolvable input is returned unchanged.
+ * ponytail: not a full WHATWG URL match (empty path segments are collapsed, no
+ * percent-decoding or host lower-casing). Good enough for feed links; use a
+ * whatwg-url polyfill if exact behaviour is ever needed.
  * @param {string} link
  * @param {string} feedUrl
  * @returns {string}
@@ -480,16 +481,16 @@ function getHeaderValue(headers, name) {
 function resolveLink(link, feedUrl) {
   if (!link) return "";
   const text = String(link).trim();
-  if (!text) return ""; // <link> が空・空白のみなら「リンク無し」扱い
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text)) return text; // 既に絶対 URL
-  // origin = http(s)://host、dir = feedUrl のディレクトリ（末尾スラッシュ込み）
+  if (!text) return ""; // empty or whitespace-only <link> means "no link"
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(text)) return text; // already absolute
+  // origin = http(s)://host, dir = the feed URL's directory (with trailing slash)
   const base = /^(https?):\/\/([^\/?#]*)([^?#]*)/i.exec(String(feedUrl || "").trim());
-  if (!base) return text; // feedUrl が http(s) でなければ解決しない
+  if (!base) return text; // only http(s) feed URLs are used as a base
   const scheme = (base[1] || "").toLowerCase();
   const host = base[2] || "";
   if (!scheme || !host) return text;
   const basePath = base[3] || "/";
-  if (text.startsWith("//")) return scheme + ":" + text; // スキーマ相対
+  if (text.startsWith("//")) return scheme + ":" + text; // scheme-relative
   const query = text.indexOf("?");
   const hash = text.indexOf("#");
   const cut = query < 0 ? hash : hash < 0 ? query : Math.min(query, hash);
@@ -554,7 +555,7 @@ function parseAtom(root, feedUrl) {
     const titleEl = e.getChild("title", ns);
     const title = titleEl ? titleEl.getText() : "";
 
-    // link 要素（rel="alternate" を優先、無ければ最初の href）
+    // <link>: prefer rel="alternate", else the first href
     let link = "";
     const links = e.getChildren("link", ns);
     for (const linkEl of links) {
@@ -582,11 +583,10 @@ function parseAtom(root, feedUrl) {
   return out;
 }
 
-// ===== LINE 通知 =====
+// ===== LINE notifications =====
 
 /**
- * 通知メッセージを構築 (LINE 送信用のプレーンテキスト)
- * Markdown 非依存のため LINE でもそのまま表示可能。
+ * Builds the plain-text notification for one article (LINE shows no Markdown).
  */
 function buildItemMessage(item, feedUrl, feedTitle) {
   const title = item.title || "(タイトルなし)";
@@ -601,19 +601,20 @@ function buildItemMessage(item, feedUrl, feedTitle) {
 }
 
 /**
- * LINE Messaging API へのメッセージ送信 (push) をチャンク分割で実行
- * 途中で push が失敗した場合に「どの記事まで届いたか」を判定できるよう、
- * push が成功するたびに、その push へ含めた記事 index（messages の添字）を
- * 呼び出し側の `sentIndexes` に積む（例外が出ても積み上がった分は残る）。
+ * Packs messages into text chunks of at most LINE_MAX_TEXT_LENGTH and sends
+ * them, LINE_MAX_MESSAGES_PER_PUSH chunks per push.
+ * After each successful push, the indexes (into `messages`) of the articles it
+ * carried are appended to the caller's `sentIndexes`, so the caller knows what
+ * was delivered even when a later push throws.
  * @param {string} channelAccessToken LINE_CHANNEL_ACCESS_TOKEN
- * @param {string} targetId LINE_TARGET_ID (ユーザー/グループ/トークルーム ID)
- * @param {string[]} messages 各記事の通知メッセージ配列
- * @param {number[][]} sentIndexes 成功した push ごとに記事 index を積む配列（呼び出し側が用意）
+ * @param {string} targetId LINE_TARGET_ID (user, group or room ID)
+ * @param {string[]} messages one notification text per article
+ * @param {number[][]} sentIndexes receives one array of article indexes per successful push
  */
 function postToLineInChunks(channelAccessToken, targetId, messages, sentIndexes) {
   const sep = "\n\n";
   const chunks = [];
-  const chunkIndexes = []; // chunks と対応。chunks[n] に入る記事の index
+  const chunkIndexes = []; // chunkIndexes[n] = article indexes packed into chunks[n]
   let buffer = "";
   let bufferIndexes = [];
   for (let index = 0; index < messages.length; index++) {
@@ -621,7 +622,7 @@ function postToLineInChunks(channelAccessToken, targetId, messages, sentIndexes)
     if (!msg) continue;
 
     const joined = buffer ? buffer + sep + msg : msg;
-    // LINE_MAX_TEXT_LENGTH を超える場合は新しいチャンクへ
+    // start a new chunk when this message would exceed LINE_MAX_TEXT_LENGTH
     if (joined.length > LINE_MAX_TEXT_LENGTH) {
       if (buffer) {
         chunks.push(buffer);
@@ -639,7 +640,7 @@ function postToLineInChunks(channelAccessToken, targetId, messages, sentIndexes)
     chunkIndexes.push(bufferIndexes);
   }
 
-  // LINE_MAX_MESSAGES_PER_PUSH 件ずつ 1 push にまとめて送信
+  // send LINE_MAX_MESSAGES_PER_PUSH chunks per push
   for (let i = 0; i < chunks.length; i += LINE_MAX_MESSAGES_PER_PUSH) {
     if (i > 0) Utilities.sleep(LINE_CHUNK_INTERVAL_MS);
     const batchIndexes = [];
@@ -647,12 +648,12 @@ function postToLineInChunks(channelAccessToken, targetId, messages, sentIndexes)
       batchIndexes.push.apply(batchIndexes, chunkIndexes[j]);
     }
     postToLine(channelAccessToken, targetId, chunks.slice(i, i + LINE_MAX_MESSAGES_PER_PUSH));
-    sentIndexes.push(batchIndexes); // 送れたぶんだけ積む（途中で失敗しても残す）
+    sentIndexes.push(batchIndexes); // recorded only once the push succeeded
   }
 }
 
 /**
- * LINE メッセージを LINE_MAX_TEXT_LENGTH に収まるよう丸める
+ * Truncates a message to maxLen characters, ending it with an ellipsis.
  */
 function normalizeLineMessage(message, maxLen) {
   if (!message) return "";
@@ -726,9 +727,9 @@ function postToLine(channelAccessToken, targetId, messageTexts) {
   }
 }
 
-// ===== ユーティリティ =====
+// ===== Utilities =====
 
-/** LINE Messaging API のチャネルアクセストークンを Script Properties に登録する */
+/** Saves the LINE Messaging API channel access token to Script Properties. */
 function setLineChannelAccessToken(token) {
   if (!token || typeof token !== "string") {
     throw new Error("チャネルアクセストークンが空、または文字列ではありません");
@@ -737,7 +738,7 @@ function setLineChannelAccessToken(token) {
   Logger.log("LINE Channel Access Token を登録しました。");
 }
 
-/** LINE の送信先 ID (ユーザー/グループ/トークルーム) を Script Properties に登録する */
+/** Saves the LINE target ID (user, group or room) to Script Properties. */
 function setLineTargetId(targetId) {
   if (!targetId || typeof targetId !== "string") {
     throw new Error("送信先 ID が空、または文字列ではありません");
@@ -747,8 +748,8 @@ function setLineTargetId(targetId) {
 }
 
 /**
- * 監視する RSS/Atom フィードの URL 一覧を Script Properties に登録する
- * @param {string[]} urls - フィード URL の配列
+ * Saves the list of feed URLs to monitor to Script Properties.
+ * @param {string[]} urls feed URLs
  * @example setFeedUrls(['https://example.com/feed', 'https://blog.example.jp/rss'])
  */
 function setFeedUrls(urls) {
@@ -759,7 +760,7 @@ function setFeedUrls(urls) {
   Logger.log("feedUrls を登録しました: " + urls.join(", "));
 }
 
-/** Script Properties からフィード URL 配列を取得する */
+/** Reads the feed URL list from Script Properties. */
 function getFeedUrls() {
   const raw = getScriptProperties().getProperty(PROPERTY_FEED_URLS) || "[]";
   try {
@@ -804,10 +805,10 @@ function safeParseDate(s) {
   return d;
 }
 
-// ===== 設定検証ユーティリティ =====
+// ===== Setup check =====
 /**
- * 現在のセットアップ状態を検証し、結果を返します。
- * 家族が「なぜ通知が届かないのか」を診断するのに便利です。
+ * Checks the setup and reports what is missing; handy when someone asks why
+ * notifications stopped arriving.
  *
  * @returns {{ready: boolean, warnings: string[], config: object}}
  */
@@ -815,7 +816,7 @@ function validateSetup() {
   const warnings = [];
   const config = {};
 
-  // フィードURL
+  // Feed URLs
   const feedUrls = getFeedUrls();
   config.feedUrls = feedUrls;
   if (!feedUrls.length) {

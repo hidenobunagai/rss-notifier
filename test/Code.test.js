@@ -1,5 +1,5 @@
-// Code.js（GAS）の純関数と選別ロジックのテスト。
-// GAS API はガスハーネスが差し替えるので、bun test からそのまま呼べる。
+// Tests for Code.js (Apps Script): parsing, read state, batching and LINE delivery.
+// The harness stubs the GAS APIs, so bun test can call the code directly.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { el, loadGas, okFetch, rss } from "./gas-harness.js";
@@ -20,7 +20,7 @@ const withoutSeen = (props) =>
 // Stored seenIds are hashed; compare them against hashed raw IDs.
 const keysOf = (api, ids) => ids.map((id) => api.seenKey(id));
 
-// LINE 送信（push エンドポイント宛）を拾い、記事タイトルの配列を返す
+// Article titles from the calls made to the LINE push endpoint
 function sentTitles(captured) {
   return captured
     .filter((c) => c.url === LINE_PUSH_URL)
@@ -158,12 +158,12 @@ describe("postToLineInChunks", () => {
   test("push が成功するたびに、含めた記事 index が呼び出し側の配列に積まれる", () => {
     const { api } = loadGas({ fetch: okFetch() });
     const messages = ["a".repeat(4000), "b".repeat(4000), "c".repeat(4000), "d".repeat(4000)];
-    // 1 メッセージ = 1 チャンク。5 チャンク 1 push なので push は 1 回 = 全 index
+    // one message per chunk; 5 chunks fit one push, so one push carries every index
     const sentIndexes = [];
     api.postToLineInChunks("token", "target", messages, sentIndexes);
     expect(sentIndexes).toEqual([[0, 1, 2, 3]]);
 
-    // 同じチャンクに畳まれた場合も元の index に戻る
+    // messages packed into one chunk still map back to their own indexes
     const merged = [];
     api.postToLineInChunks("token", "target", ["a", "b", "c".repeat(4000)], merged);
     expect(merged).toEqual([[0, 1, 2]]);
@@ -177,12 +177,12 @@ describe("postToLineInChunks", () => {
     expect(() =>
       api.postToLineInChunks("token", "target", Array.from({ length: 6 }, () => "a".repeat(4000)), sentIndexes),
     ).toThrow("LINE 送信エラー (500)");
-    expect(sentIndexes).toEqual([]); // 1 push 目も失敗したので何も積まれない
+    expect(sentIndexes).toEqual([]); // the first push failed too, so nothing is recorded
   });
 });
 
-// 2026-09-16 に実測した取りこぼし 3 経路（日時ウォーターマークが原因）を、
-// ID ベースの既読に直した後の期待挙動として固定する。
+// Pins the expected behaviour for the three missed-article paths measured on
+// 2026-09-16 (caused by the date watermark), after moving to ID-based read state.
 describe("postToLine retries", () => {
   const respond = (code, headers = {}) => ({ getResponseCode: () => code, getContentText: () => "", getHeaders: () => headers });
   const scripted = (codes, calls) => (url, params) => {
@@ -239,17 +239,17 @@ describe("processFeed: ID ベースの既読", () => {
 
     api.processFeed(FEED);
     const first = sentTitles(captured);
-    expect(first).toEqual(["A1", "A2", "A3", "A4", "A5"]); // 古い方から 5 件
+    expect(first).toEqual(["A1", "A2", "A3", "A4", "A5"]); // the oldest five
 
     captured.length = 0;
     api.processFeed(FEED);
     const second = sentTitles(captured);
-    expect(second).toEqual(["A6", "A7", "A8", "A9", "A10"]); // 残りは次の 15 分で拾われる
+    expect(second).toEqual(["A6", "A7", "A8", "A9", "A10"]); // the rest follow in the next run
 
-    // 10 件すべてが 1 回ずつ、古い→新しい順に通知される
+    // all ten are notified once each, oldest first
     expect([...first, ...second]).toEqual(rawItems(10).map((it) => it.title));
 
-    // 既読 ID も 10 件分が保存される
+    // all ten are stored as read
     expect(JSON.parse(get("seenIds:" + FEED)).sort()).toEqual(keysOf(api, rawItems(10).map((it) => it.guid)).sort());
   });
 
@@ -272,7 +272,7 @@ describe("processFeed: ID ベースの既読", () => {
     items.push({ title: "B4", link: `${FEED}/b4` });
     captured.length = 0;
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual(["B4"]); // 日時が 1970 でも ID なら新着と判定できる
+    expect(sentTitles(captured)).toEqual(["B4"]); // dated 1970, yet detected as new by its ID
   });
 
   test("③ LINE 送信が失敗したら既読にせず、次回の実行で全件再送される", () => {
@@ -281,18 +281,18 @@ describe("processFeed: ID ベースの既読", () => {
     const root = rss(rawItems(3));
     const fetch = (url, params) => {
       const code = url === LINE_PUSH_URL ? lineCode : 200;
-      if (code < 400) captured.push({ url, params }); // 成功した送信だけを記録する
+      if (code < 400) captured.push({ url, params }); // record successful sends only
       return { getResponseCode: () => code, getContentText: () => "", getHeaders: () => ({}) };
     };
     const { api } = loadGas({ properties: LINE_SETUP, fetch, root });
 
     expect(() => api.processFeed(FEED)).toThrow("LINE 送信エラー (500)");
-    expect(sentTitles(captured)).toEqual([]); // 送信失敗なので既読も進まない
+    expect(sentTitles(captured)).toEqual([]); // the send failed, so nothing becomes read
 
     lineCode = 200;
     captured.length = 0;
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual(["A1", "A2", "A3"]); // 全件が 1 度ずつ送られる
+    expect(sentTitles(captured)).toEqual(["A1", "A2", "A3"]); // every article is sent exactly once
   });
 
   test("同じ記事は 2 度通知されない（通常経路）", () => {
@@ -308,8 +308,8 @@ describe("processFeed: ID ベースの既読", () => {
     expect(sentTitles(captured)).toEqual([]);
   });
 
-  // チャンク分割送信の途中で push が失敗すると、既に届いた分の記事まで
-  // 既読にならず次回に再送されてしまう（重複通知）。
+  // If a push fails midway, articles already delivered by earlier pushes must
+  // still become read; otherwise the next run sends them again.
   test("④ 2 チャンク目だけ 500 → 1 チャンク目の記事は再送されず、2 チャンク目は再送される", () => {
     const captured = [];
     let pushCount = 0;
@@ -325,27 +325,28 @@ describe("processFeed: ID ベースの既読", () => {
       return { getResponseCode: () => code, getContentText: () => "", getHeaders: () => ({}) };
     };
 
-    // 1 push = 5 チャンク。2 チャンク目の push まで作るため上限を持ち上げる
-    // （processFeed は 5 件しか送らないので、現物の設定では 1 push で終わる）
+    // One push holds 5 chunks. Raise the per-run cap to need more pushes
+    // (with the real cap of 5, a run always fits in one push).
     const source = readFileSync(new URL("../Code.js", import.meta.url), "utf8").replace(
       "const MAX_NOTIFICATIONS_PER_RUN = 5;",
       "const MAX_NOTIFICATIONS_PER_RUN = 12;",
     );
-    // メッセージを 4000 字にして 1 チャンク = 1 記事にし、12 記事を 5 + 5 + 2 の
-    // 3 push に分ける（LINE_MAX_MESSAGES_PER_PUSH = 5 のまま）
+    // 4000-character messages make one article per chunk, so 12 articles take
+    // three pushes of 5 + 5 + 2 (LINE_MAX_MESSAGES_PER_PUSH stays 5).
     const items = rawItems(12).map((it) => ({ ...it, title: it.title + "x".repeat(4000) }));
     const { api, get } = loadGas({ properties: LINE_SETUP, fetch, root: () => rss(items), source });
     const titles = () => items.map((it) => it.title);
 
-    // 1 回目: push#1（記事 1〜5）は届く。push#2（記事 6〜10）が 500 → 既読を保存してから例外
+    // Run 1: push#1 (articles 1-5) succeeds, push#2 (6-10) keeps failing with 500;
+    // the delivered part is saved as read before the error is thrown
     expect(() => api.processFeed(FEED)).toThrow("LINE 送信エラー (500)");
     expect(sentTitles(captured)).toEqual(titles().slice(0, 5));
     expect(pushCount).toBe(4); // push#1, then push#2 tried LINE_MAX_RETRIES (3) times
 
-    // 届いた 5 件だけが既読に入る
+    // only the five delivered articles are read
     expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, rawItems(5).map((it) => it.guid)));
 
-    // 2 回目: 記事 6〜12 だけが再送される（1 チャンク目は再送されない）
+    // Run 2: only articles 6-12 are sent (the first chunk is not resent)
     failOnce = false;
     pushCount = 0;
     captured.length = 0;
@@ -371,10 +372,10 @@ describe("processFeed: ID ベースの既読", () => {
 
     api.processFeed(FEED);
     const titles = sentTitles(captured);
-    // 重複記事のタイトルが LINE 送信に1回だけ現れ、重複が上限枠を食わず相異なる古い順の5件が初回で送られる
+    // each duplicate is sent once and does not use up the cap: the five oldest distinct articles go first
     expect(titles).toEqual(["A1", "A2", "A3", "A4", "A5"]);
 
-    // 保存された seenIds に重複が無いこと
+    // the stored seenIds have no duplicates
     const stored = JSON.parse(get("seenIds:" + FEED));
     expect(stored).toEqual(keysOf(api, ["a1", "a2", "a3", "a4", "a5"]));
     expect(new Set(stored).size).toBe(stored.length);
@@ -453,7 +454,7 @@ describe("processFeed: ID ベースの既読", () => {
     });
 
     api.processFeed(FEED);
-    expect(sentTitles(captured)).toEqual([]); // lastSeen 以前の記事は既読として引き継がれる
+    expect(sentTitles(captured)).toEqual([]); // articles up to lastSeen carry over as read
     expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, ["a1", "a2", "a3"]));
     expect(get("lastSeen:" + FEED)).toBeUndefined(); // the watermark is gone once migrated
 
@@ -595,9 +596,9 @@ describe("parseAtom の ID", () => {
   });
 });
 
-// 6868457 で embed.url に入れないようにした Moody Blues Atom は相対 href
-// （<link href="/blog/x"/>）のままで、通知のタイトルがクリックできないままだった。
-// フィード URL を基準に絶対化してから通知する。
+// The Moody Blues Atom feed uses relative hrefs (<link href="/blog/x"/>). After
+// 6868457 kept them out of embed.url, notification titles stayed unclickable.
+// Links are now resolved against the feed URL before notifying.
 describe("resolveLink: 記事リンクの絶対 URL 解決", () => {
   const ATOM_FEED = "https://www.moodyblues.com/rss/blog-entries.xml";
 
@@ -643,7 +644,7 @@ describe("resolveLink: 記事リンクの絶対 URL 解決", () => {
     expect(f("//cdn.example.com/x", ATOM_FEED)).toBe("https://cdn.example.com/x");
     expect(f("", ATOM_FEED)).toBe("");
     expect(f("   ", ATOM_FEED)).toBe("");
-    // feedUrl が http(s) でなければ解決せず元の値を返す
+    // a non-http(s) feed URL leaves the link unresolved
     expect(f("/blog/x", "ftp://example.com/f")).toBe("/blog/x");
     expect(f("/blog/x", "")).toBe("/blog/x");
   });
@@ -692,21 +693,21 @@ describe("parseSeenIds / selectNewItems / mergeSeenIds", () => {
       { id: "c", title: "first c" },
       { id: "b", title: "second b" },
     ];
-    // seenIds に "c" があるとき、"c" は除外され、重複する "a" と "b" は最初の1件だけが残る
+    // "c" is read and dropped; duplicated "a" and "b" keep their first occurrence
     const result = api.selectNewItems(items, ["c"]);
     expect(result).toEqual([
       { id: "a", title: "first a" },
       { id: "b", title: "first b" },
     ]);
 
-    // seenIds が空配列でも重複は最初の1件だけに絞られる
+    // duplicates are collapsed even with no read state
     expect(api.selectNewItems(items, [])).toEqual([
       { id: "a", title: "first a" },
       { id: "b", title: "first b" },
       { id: "c", title: "first c" },
     ]);
 
-    // seenIds に重複値が含まれていても正常に動作する
+    // duplicated read entries are fine
     expect(api.selectNewItems(items, ["c", "c", "a"])).toEqual([
       { id: "b", title: "first b" },
     ]);

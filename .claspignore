@@ -1,21 +1,22 @@
-# clasp push / watch の対象を「GAS に必要なファイルだけ」に絞る。
+# Limits clasp push / watch to the files Apps Script needs.
 #
-# 許可リスト方式にしている理由（実測 2026-09-17, clasp 3.3.0）:
-# - .claspignore を置くと clasp の既定 ignore（DEFAULT_CLASP_IGNORE）は **置き換わる**。
-#   そのため「docs/** や test/** を除外する」拒否リストだけを書くと、既定で除外されて
-#   いた node_modules/**/*.js や *.{gs,js,html} 以外のものが逆に push 対象へ入る
-#   （実測: node_modules/micromatch/index.js と .eslintrc.js が Tracked に入った）。
-# - 「全除外 → 必要なものだけ許可」なら、後から何を置いても push 対象は増えない。
+# Why an allow-list (measured 2026-09-17, clasp 3.3.0):
+# - A .claspignore **replaces** clasp's default ignore list (DEFAULT_CLASP_IGNORE).
+#   A deny-list of just docs/** and test/** would therefore push files the default
+#   used to skip, such as node_modules/**/*.js and anything that is not *.{gs,js,html}
+#   (measured: node_modules/micromatch/index.js and .eslintrc.js became Tracked).
+# - "Ignore everything, then allow what is needed" cannot grow the push set when
+#   new files appear later.
 #
-# 実測（このファイルを置いた状態）: clasp status の Tracked は
-#   appsscript.json / Code.js の 2 本だけ（docs/ の HTML 約 1.45MB は上がらない）。
+# Measured with this file in place: clasp status tracks only
+#   appsscript.json and Code.js (the ~1.45MB of HTML under docs/ is not uploaded).
 #
-# 注意: clasp は ignore の照合を dot: true で行うため `!*.js` は .eslintrc.js の
-#   ようなドットファイルにも当たる。最後の `.*` でそれを打ち消している（順序が意味を持つ）。
-#   また `*` は `/` を跨がないので、リポジトリ直下のファイルだけが対象になる。
+# Note: clasp matches with dot: true, so `!*.js` also matches dotfiles such as
+#   .eslintrc.js. The final `.*` undoes that (order matters). `*` does not cross
+#   `/`, so only files at the repository root are included.
 #
-# GAS にファイルを足すときは、下の許可リストに 1 行足すこと
-# （足し忘れても clasp status の "Untracked files" に出るので気づける）。
+# When you add a GAS file, add a line to the allow-list below
+# (if you forget, it shows up under "Untracked files" in clasp status).
 **/**
 !appsscript.json
 !*.gs
