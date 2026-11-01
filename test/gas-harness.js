@@ -73,7 +73,9 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lo
     },
   };
   const names = Object.keys(gas);
-  const api = new Function(...names, `${source}\nreturn { ${EXPORTS.join(", ")} };`)(
+  // Functions missing from `source` (e.g. an older Code.js) are exported as undefined
+  const exportList = EXPORTS.map((name) => `${name}: typeof ${name} === "function" ? ${name} : undefined`);
+  const api = new Function(...names, `${source}\nreturn { ${exportList.join(", ")} };`)(
     ...names.map((name) => gas[name]),
   );
   return { api, get: (key) => store.get(key), sleeps };

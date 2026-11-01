@@ -452,6 +452,41 @@ describe("processFeed: ID ベースの既読", () => {
     expect(sentTitles(captured)).toEqual(["NEW"]);
   });
 
+  test("upgrading a legacy state that the old code had cycled re-sends nothing", () => {
+    // Build the legacy state with the old code (c82c9df): the newest 50 IDs that
+    // markCurrentAsRead stored, then runs that kept cycling the 100-item feed
+    // through its 50-ID window.
+    const oldSource = readFileSync(new URL("./fixtures/Code.c82c9df.js", import.meta.url), "utf8");
+    const items = Array.from({ length: 100 }, (_, i) => ({
+      title: `T${i}`,
+      link: `${FEED}/${i}`,
+      guid: `g${i}`,
+      pubDate: new Date(Date.UTC(2026, 0, 1) + i * 3600e3).toUTCString(),
+    }));
+    const legacyIds = items.slice(-50).map((it) => it.guid);
+    let state = JSON.stringify(legacyIds);
+    for (let run = 0; run < 25; run++) {
+      const step = loadGas({
+        properties: { ...LINE_SETUP, ["seenIds:" + FEED]: state },
+        fetch: okFetch(),
+        root: () => rss(items),
+        source: oldSource,
+      });
+      step.api.processFeed(FEED);
+      state = step.get("seenIds:" + FEED);
+    }
+    expect(JSON.parse(state)).not.toContain("g99"); // the window no longer holds the newest
+
+    const captured = [];
+    const { api } = loadGas({
+      properties: { ...LINE_SETUP, ["seenIds:" + FEED]: state },
+      fetch: okFetch(captured),
+      root: () => rss(items),
+    });
+    for (let run = 0; run < 20; run++) api.processFeed(FEED);
+    expect(sentTitles(captured)).toEqual([]);
+  });
+
   test("upgrading a legacy state whose IDs no longer match baselines the feed", () => {
     const captured = [];
     const { api } = loadGas({

@@ -23,6 +23,7 @@ const PROPERTY_SEEN_IDS_PREFIX = "seenIds:"; // seenIds:<feedUrl> = JSON array o
 const MAX_SEEN_IDS = 200;
 // Script Properties allow 9KB per value. 200 hashed keys take about 5.4KB.
 const MAX_SEEN_IDS_JSON_LENGTH = 6000;
+const LEGACY_MAX_SEEN_IDS = 50; // entry cap of the raw-ID read state of older versions
 const SEEN_KEY_PREFIX = "h:"; // marks a hashed key; entries without it are legacy raw IDs
 const PROPERTY_FEED_URLS = "feedUrls"; // JSON array of feed URLs
 const MAX_NOTIFICATIONS_PER_RUN = 5; // max articles per feed per run (anti-spam); the rest waits for the next run
@@ -246,8 +247,11 @@ function upgradeLegacySeenIds(legacySeenIds, items) {
   const legacyKeys = new Set(legacySeenIds.map(toSeenKey));
   const ids = items.map((it) => it.id);
   const matched = items.filter((it) => legacyKeys.has(seenKey(it.id)));
-  if (!matched.length) {
-    return mergeSeenIds(legacySeenIds, ids, ids); // nothing recognisable: baseline
+  if (!matched.length || legacyStateWasTrimmed(legacySeenIds)) {
+    // Nothing recognisable, or the old cap evicted IDs (old versions kept
+    // cycling long feeds through a full window, so it need not even hold the
+    // newest article): baseline instead of guessing.
+    return mergeSeenIds(legacySeenIds, ids, ids);
   }
   const newestSeen = Math.max(...matched.map((it) => it.date.getTime()));
   const readIds =
@@ -255,6 +259,18 @@ function upgradeLegacySeenIds(legacySeenIds, items) {
       ? items.filter((it) => it.date.getTime() <= newestSeen).map((it) => it.id)
       : matched.map((it) => it.id); // undated feed: no order to infer from
   return mergeSeenIds(legacySeenIds, readIds, ids);
+}
+
+/**
+ * Whether a legacy raw-ID state may have lost IDs to the old caps
+ * (50 entries, 6000 JSON characters).
+ * @param {string[]} legacySeenIds
+ * @returns {boolean}
+ */
+function legacyStateWasTrimmed(legacySeenIds) {
+  if (legacySeenIds.length >= LEGACY_MAX_SEEN_IDS) return true;
+  const longest = Math.max(0, ...legacySeenIds.map((id) => JSON.stringify(id).length));
+  return JSON.stringify(legacySeenIds).length + longest + 1 > MAX_SEEN_IDS_JSON_LENGTH;
 }
 
 /**
