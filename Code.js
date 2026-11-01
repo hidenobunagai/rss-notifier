@@ -21,7 +21,7 @@ const MAX_SEEN_IDS = 200;
 const MAX_SEEN_IDS_JSON_LENGTH = 6000;
 const SEEN_KEY_PREFIX = "h:"; // marks a hashed key; entries without it are legacy raw IDs
 const PROPERTY_FEED_URLS = "feedUrls"; // JSON 配列で保存
-const MAX_NOTIFICATIONS_PER_RUN = 5; // 一度の実行で通知する件数上限（スパム対策）
+const MAX_NOTIFICATIONS_PER_RUN = 5; // max articles per feed per run (anti-spam); the rest waits for the next run
 // LINE Messaging API 関連 (LINE Notify は 2025/3 廃止のため非採用)
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_MAX_RETRIES = 3;
@@ -36,19 +36,7 @@ function checkFeeds() {
     Logger.log("feedUrls が未設定です。setFeedUrls([...]) を先に実行してください。");
     return;
   }
-  const errors = [];
-  for (const url of feedUrls) {
-    try {
-      processFeed(url);
-    } catch (e) {
-      errors.push(url + " -> " + (e && e.stack ? e.stack : e));
-    }
-  }
-  if (errors.length) {
-    // Throw so the trigger run is marked failed and Apps Script emails the owner;
-    // otherwise an expired token or a dead feed fails silently forever.
-    throw new Error("checkFeeds failed for " + errors.length + " feed(s):\n" + errors.join("\n"));
-  }
+  notifyFeeds(feedUrls);
 }
 
 // 時間主導トリガを作成（例: 15分毎）
@@ -250,72 +238,122 @@ function loadSeenIds(props, feedUrl, items) {
 }
 
 // ===== 実装本体 =====
+
+/** Checks a single feed (manual runs and tests); see notifyFeeds. */
 function processFeed(feedUrl) {
+  notifyFeeds([feedUrl]);
+}
+
+/**
+ * Collects new items from every feed and delivers them together, so one run
+ * costs one LINE push (up to LINE_MAX_MESSAGES_PER_PUSH text bubbles) instead
+ * of one push per feed. Errors are collected and thrown at the end so the
+ * trigger run is marked failed and Apps Script emails the owner.
+ * @param {string[]} feedUrls
+ */
+function notifyFeeds(feedUrls) {
+  const props = getScriptProperties();
+  const errors = [];
+  const pending = [];
+  for (const url of feedUrls) {
+    try {
+      const entry = collectNewItems(props, url);
+      if (entry) pending.push(entry);
+    } catch (e) {
+      errors.push(url + " -> " + (e && e.stack ? e.stack : e));
+    }
+  }
+
+  if (pending.length) {
+    try {
+      deliverItems(props, pending);
+    } catch (e) {
+      errors.push("LINE -> " + (e && e.stack ? e.stack : e));
+    }
+  }
+
+  if (errors.length) {
+    // Without this throw an expired token or a dead feed fails silently forever.
+    throw new Error("Feed check failed (" + errors.length + " error(s)):\n" + errors.join("\n"));
+  }
+}
+
+/**
+ * Fetches a feed and returns its tracked items, read state and new items,
+ * or null when there is nothing to send.
+ * @returns {{url: string, items: Array<object>, seenIds: string[], newItems: Array<object>}|null}
+ */
+function collectNewItems(props, feedUrl) {
   let items = fetchFeedItems(feedUrl);
   if (!items || !items.length) {
-    return;
+    return null;
   }
 
   // Oldest first, then keep only the newest MAX_SEEN_IDS items
   items.sort((a, b) => a.date - b.date);
   items = trackedItems(items);
 
-  const props = getScriptProperties();
   const seenIds = loadSeenIds(props, feedUrl, items);
-  let newItems = selectNewItems(items, seenIds);
+  // Oldest first, capped per feed; the rest is picked up by the next run
+  const newItems = selectNewItems(items, seenIds).slice(0, MAX_NOTIFICATIONS_PER_RUN);
   if (!newItems.length) {
-    return; // 更新なし
+    return null;
   }
+  return { url: feedUrl, items, seenIds, newItems };
+}
 
-  // スパム防止のため一度に送る最大件数を制限（古い方から順に送り、残りは次回の実行に回す）
-  if (newItems.length > MAX_NOTIFICATIONS_PER_RUN) {
-    newItems = newItems.slice(0, MAX_NOTIFICATIONS_PER_RUN);
-  }
-
+/**
+ * Sends the new items of all feeds in as few pushes as possible and stores,
+ * per feed, the items that were actually delivered (a failed push leaves its
+ * items unread for the next run). Rethrows the send error after saving.
+ */
+function deliverItems(props, pending) {
   const lineToken = (props.getProperty(PROPERTY_LINE_CHANNEL_ACCESS_TOKEN) || "").trim();
   const lineTargetId = (props.getProperty(PROPERTY_LINE_TARGET_ID) || "").trim();
-  const hasLine = !!lineToken && !!lineTargetId;
-
-  if (!hasLine) {
+  if (!lineToken || !lineTargetId) {
     throw new Error(
       "通知先が未設定です。setLineChannelAccessToken(...) + setLineTargetId(...) を先に実行してください。",
     );
   }
 
-  // ----- LINE 送信 (プレーンテキストをチャンク分割で一括送信) -----
-  let lastSuccessDate = null;
+  const messages = [];
+  const owners = []; // owners[i] = { entry, item } for messages[i]
+  for (const entry of pending) {
+    entry.notifiedIds = [];
+    for (const item of entry.newItems) {
+      messages.push(buildItemMessage(item, entry.url));
+      owners.push({ entry, item });
+    }
+  }
+
   let sendError = null;
-  const notifiedIds = [];
-  // push が成功した記事 index。途中で失敗しても、ここまで届いた記事だけは既読にする
   const sentIndexes = [];
   try {
-    const messages = newItems.map((item) => buildItemMessage(item, feedUrl));
     postToLineInChunks(lineToken, lineTargetId, messages, sentIndexes);
-    // LINE 成功をもって既読基準にする
-    lastSuccessDate = newItems[newItems.length - 1].date;
   } catch (e) {
     sendError = e; // rethrown after the delivered part is saved as read
   }
   for (const indexes of sentIndexes) {
     for (const index of indexes) {
-      notifiedIds.push(newItems[index].id);
+      owners[index].entry.notifiedIds.push(owners[index].item.id);
     }
   }
 
-  // 送信成功した記事 ID を既読として保存（未送信分は次回リトライ対象に残す）
-  const mergedSeenIds = mergeSeenIds(
-    seenIds,
-    notifiedIds,
-    items.map((it) => it.id),
-  );
-  if (mergedSeenIds.length > 0) {
-    props.setProperty(PROPERTY_SEEN_IDS_PREFIX + feedUrl, JSON.stringify(mergedSeenIds));
-  }
-  if (lastSuccessDate) {
-    props.setProperty(
-      PROPERTY_LAST_SEEN_PREFIX + feedUrl,
-      lastSuccessDate.toISOString(),
+  for (const entry of pending) {
+    const merged = mergeSeenIds(
+      entry.seenIds,
+      entry.notifiedIds,
+      entry.items.map((it) => it.id),
     );
+    if (merged.length > 0) {
+      props.setProperty(PROPERTY_SEEN_IDS_PREFIX + entry.url, JSON.stringify(merged));
+    }
+    if (!sendError) {
+      props.setProperty(
+        PROPERTY_LAST_SEEN_PREFIX + entry.url,
+        entry.newItems[entry.newItems.length - 1].date.toISOString(),
+      );
+    }
   }
   if (sendError) {
     throw sendError;

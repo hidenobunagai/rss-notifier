@@ -364,7 +364,7 @@ describe("error reporting", () => {
       fetch: lineFails(401),
       root: () => rss([{ title: "a", guid: "a", link: `${FEED}/a` }]),
     });
-    expect(() => api.checkFeeds()).toThrow(/checkFeeds failed for 1 feed\(s\)[\s\S]*\(401\)/);
+    expect(() => api.checkFeeds()).toThrow(/Feed check failed \(1 error\(s\)\)[\s\S]*\(401\)/);
   });
 
   test("checkFeeds keeps processing other feeds before throwing", () => {
@@ -381,6 +381,29 @@ describe("error reporting", () => {
     });
     expect(() => api.checkFeeds()).toThrow("Fetch failed 404");
     expect(sentTitles(captured)).toEqual(["ok"]);
+  });
+});
+
+describe("batching across feeds", () => {
+  test("new items of several feeds go out in a single LINE push", () => {
+    const FEEDS = ["https://a.example.com/feed", "https://b.example.com/feed", "https://c.example.com/feed"];
+    const captured = [];
+    const roots = Object.fromEntries(
+      FEEDS.map((url, f) => [url, rss([1, 2].map((i) => ({ title: `F${f}-${i}`, guid: `${url}#${i}`, link: `${url}/${i}` })))]),
+    );
+    let current = null;
+    const fetch = (url, params) => {
+      current = url;
+      return okFetch(captured)(url, params);
+    };
+    const properties = { ...LINE_SETUP, feedUrls: JSON.stringify(FEEDS) };
+    for (const url of FEEDS) properties["seenIds:" + url] = "[]";
+    const { api, get } = loadGas({ properties, fetch, root: () => roots[current] });
+
+    api.checkFeeds();
+    expect(captured.filter((c) => c.url === LINE_PUSH_URL).length).toBe(1);
+    expect(sentTitles(captured)).toEqual(["F0-1", "F0-2", "F1-1", "F1-2", "F2-1", "F2-2"]);
+    for (const url of FEEDS) expect(JSON.parse(get("seenIds:" + url)).length).toBe(2);
   });
 });
 
