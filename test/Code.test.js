@@ -223,6 +223,12 @@ describe("postToLine retries", () => {
     expect(sleeps).toEqual([7000]);
   });
 
+  test("a long Retry-After is capped at 30 seconds", () => {
+    const { api, sleeps } = loadGas({ fetch: scripted([respond(503, { "Retry-After": "3600" }), 200], []) });
+    api.postToLineInChunks("token", "target", ["hello"], []);
+    expect(sleeps).toEqual([30000]);
+  });
+
   test("401 is not retried", () => {
     const calls = [];
     const { api } = loadGas({ fetch: scripted([401, 200], calls) });

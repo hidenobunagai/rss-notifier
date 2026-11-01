@@ -32,6 +32,7 @@ const LINE_MAX_RETRIES = 3;
 const LINE_MAX_TEXT_LENGTH = 5000; // max characters per text message
 const LINE_MAX_MESSAGES_PER_PUSH = 5; // max messages per push
 const LINE_CHUNK_INTERVAL_MS = 1000; // pause between pushes, and the base retry backoff (ms)
+const LINE_MAX_RETRY_WAIT_MS = 30 * 1000; // upper bound for one retry wait, even with Retry-After
 const LOCK_WAIT_MS = 30 * 1000; // how long a run waits for an overlapping run to finish
 
 // ===== Entry points =====
@@ -750,7 +751,10 @@ function postToLine(channelAccessToken, targetId, messageTexts) {
     if ((code === 429 || code >= 500) && attempt < LINE_MAX_RETRIES) {
       let waitMs = backoffMs;
       const parsed = parseInt(getHeaderValue(res.getHeaders(), "Retry-After"), 10);
-      if (!Number.isNaN(parsed)) waitMs = parsed * 1000;
+      if (!Number.isNaN(parsed)) waitMs = Math.max(parsed, 0) * 1000;
+      // Cap the wait: a long sleep would push the run past Apps Script's
+      // 6-minute limit and lose the read state of pushes already delivered.
+      waitMs = Math.min(waitMs, LINE_MAX_RETRY_WAIT_MS);
       Logger.log(`LINE 一時エラー (${code})。${waitMs}ms 後にリトライ (${attempt}/${LINE_MAX_RETRIES})`);
       Utilities.sleep(waitMs);
       continue;
