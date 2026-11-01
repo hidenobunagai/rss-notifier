@@ -443,6 +443,21 @@ describe("error reporting", () => {
   });
 });
 
+describe("script lock", () => {
+  test("a run that cannot get the script lock sends nothing and leaves the read state alone", () => {
+    const captured = [];
+    const { api, get } = loadGas({
+      properties: LINE_SETUP,
+      fetch: okFetch(captured),
+      root: () => rss([{ title: "a", guid: "a", link: `${FEED}/a` }]),
+      lockBusy: true,
+    });
+    api.checkFeeds();
+    expect(captured).toEqual([]);
+    expect(get("seenIds:" + FEED)).toBe("[]");
+  });
+});
+
 describe("batching across feeds", () => {
   test("new items of several feeds go out in a single LINE push", () => {
     const FEEDS = ["https://a.example.com/feed", "https://b.example.com/feed", "https://c.example.com/feed"];

@@ -30,6 +30,7 @@ const LINE_MAX_RETRIES = 3;
 const LINE_MAX_TEXT_LENGTH = 5000; // 1メッセージあたりの文字数上限
 const LINE_MAX_MESSAGES_PER_PUSH = 5; // 1 push あたりのメッセージ数上限
 const LINE_CHUNK_INTERVAL_MS = 1000; // レート制限対策: push 間待機 (ms)
+const LOCK_WAIT_MS = 30 * 1000; // how long a run waits for an overlapping run to finish
 
 // ===== エントリポイント =====
 function checkFeeds() {
@@ -67,6 +68,10 @@ function markCurrentAsRead() {
     Logger.log("feedUrls が未設定です。setFeedUrls([...]) を先に実行してください。");
     return;
   }
+  withScriptLock("markCurrentAsRead", () => markFeedsAsRead(feedUrls));
+}
+
+function markFeedsAsRead(feedUrls) {
   const props = getScriptProperties();
   const errors = [];
   for (const url of feedUrls) {
@@ -263,6 +268,28 @@ function processFeed(feedUrl) {
  * @param {string[]} feedUrls
  */
 function notifyFeeds(feedUrls) {
+  withScriptLock("notifyFeeds", () => notifyFeedsLocked(feedUrls));
+}
+
+/**
+ * Runs fn while holding the script lock. A manual run that overlaps the
+ * trigger would otherwise read the same read state and send items twice.
+ * If the lock stays busy, the run is skipped (the next run picks things up).
+ */
+function withScriptLock(label, fn) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) {
+    Logger.log(label + ": another run is in progress, skipped.");
+    return;
+  }
+  try {
+    fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function notifyFeedsLocked(feedUrls) {
   const props = getScriptProperties();
   const errors = [];
   const pending = [];

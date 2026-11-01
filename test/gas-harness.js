@@ -28,7 +28,7 @@ const EXPORTS = [
  * `source` を渡すと `../Code.js` ではなくその文字列を評価する（定数を差し替えて
  * processFeed を複数 push させるケースの検証に使う）。
  */
-export function loadGas({ properties = {}, fetch, root, log, source = SOURCE } = {}) {
+export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lockBusy = false } = {}) {
   const store = new Map(Object.entries(properties));
   const noFetch = () => {
     throw new Error("UrlFetchApp.fetch がスタブされていません");
@@ -43,6 +43,9 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE } =
       }),
     },
     UrlFetchApp: { fetch: fetch || noFetch },
+    LockService: {
+      getScriptLock: () => ({ tryLock: () => !lockBusy, releaseLock: () => {} }),
+    },
     Utilities: {
       sleep: () => {},
       formatDate: (date, tz, fmt) => date.toISOString(),
