@@ -659,10 +659,14 @@ function normalizeLineMessage(message, maxLen) {
 }
 
 /**
- * LINE Messaging API の push エンドポイントへ送信（429 時は Retry-After に従いリトライ）
+ * Sends one push to the LINE Messaging API.
+ * 5xx, 429 and network errors are retried with exponential backoff (or the
+ * Retry-After header). Every attempt carries the same X-Line-Retry-Key, so a
+ * retry of a push LINE already accepted is answered with 409 instead of being
+ * delivered twice; 409 on a retry therefore counts as delivered.
  * @param {string} channelAccessToken
  * @param {string} targetId
- * @param {string[]} messageTexts 1 push に含めるテキストメッセージ配列 (最大 LINE_MAX_MESSAGES_PER_PUSH)
+ * @param {string[]} messageTexts texts for one push (at most LINE_MAX_MESSAGES_PER_PUSH)
  */
 function postToLine(channelAccessToken, targetId, messageTexts) {
   const payload = {
@@ -672,40 +676,49 @@ function postToLine(channelAccessToken, targetId, messageTexts) {
   const params = {
     method: "post",
     contentType: "application/json",
-    headers: { Authorization: `Bearer ${channelAccessToken}` },
+    headers: {
+      Authorization: `Bearer ${channelAccessToken}`,
+      "X-Line-Retry-Key": Utilities.getUuid(),
+    },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
 
   for (let attempt = 1; attempt <= LINE_MAX_RETRIES; attempt++) {
-    const res = UrlFetchApp.fetch(LINE_PUSH_URL, params);
+    const backoffMs = LINE_CHUNK_INTERVAL_MS * Math.pow(2, attempt - 1);
+    let res;
+    try {
+      res = UrlFetchApp.fetch(LINE_PUSH_URL, params);
+    } catch (e) {
+      // Network error or timeout: the push may or may not have been accepted
+      if (attempt < LINE_MAX_RETRIES) {
+        Logger.log(`LINE 通信エラー。${backoffMs}ms 後にリトライ (${attempt}/${LINE_MAX_RETRIES}): ${e}`);
+        Utilities.sleep(backoffMs);
+        continue;
+      }
+      throw e;
+    }
     const code = res.getResponseCode();
     if (code >= 200 && code < 300) return;
+    if (code === 409 && attempt > 1) return; // an earlier attempt was already accepted
 
-    // 401 (認証エラー) / 400 (リクエスト不正) はリトライせず即時例外
-    if (code === 401 || code === 400) {
-      const body = res.getContentText();
+    // 400 / 401 / 403 will not succeed on retry
+    if (code === 400 || code === 401 || code === 403) {
       throw new Error(
-        `LINE 認証/リクエストエラー (${code}): ${body} - アクセストークン/ターゲットIDを確認してください`,
+        `LINE 認証/リクエストエラー (${code}): ${res.getContentText()} - アクセストークン/ターゲットIDを確認してください`,
       );
     }
 
-    if (code === 429 && attempt < LINE_MAX_RETRIES) {
-      let waitMs = LINE_CHUNK_INTERVAL_MS * attempt;
-      const retryAfter = res.getHeaders()["Retry-After"];
-      if (retryAfter) {
-        const parsed = parseInt(retryAfter, 10);
-        if (!Number.isNaN(parsed)) waitMs = parsed * 1000;
-      }
-      Logger.log(
-        `LINE レート制限 (429)。${waitMs}ms 後にリトライ (${attempt}/${LINE_MAX_RETRIES})`,
-      );
+    if ((code === 429 || code >= 500) && attempt < LINE_MAX_RETRIES) {
+      let waitMs = backoffMs;
+      const parsed = parseInt(getHeaderValue(res.getHeaders(), "Retry-After"), 10);
+      if (!Number.isNaN(parsed)) waitMs = parsed * 1000;
+      Logger.log(`LINE 一時エラー (${code})。${waitMs}ms 後にリトライ (${attempt}/${LINE_MAX_RETRIES})`);
       Utilities.sleep(waitMs);
       continue;
     }
 
-    const body = res.getContentText();
-    throw new Error(`LINE 送信エラー (${code}): ${body}`);
+    throw new Error(`LINE 送信エラー (${code}): ${res.getContentText()}`);
   }
 }
 

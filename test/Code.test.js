@@ -171,6 +171,46 @@ describe("postToLineInChunks", () => {
 
 // 2026-09-16 に実測した取りこぼし 3 経路（日時ウォーターマークが原因）を、
 // ID ベースの既読に直した後の期待挙動として固定する。
+describe("postToLine retries", () => {
+  const respond = (code, headers = {}) => ({ getResponseCode: () => code, getContentText: () => "", getHeaders: () => headers });
+  const scripted = (codes, calls) => (url, params) => {
+    calls.push(params.headers["X-Line-Retry-Key"]);
+    const next = codes.shift();
+    if (next instanceof Error) throw next;
+    return typeof next === "number" ? respond(next) : next;
+  };
+
+  test("5xx is retried with exponential backoff and the same retry key", () => {
+    const calls = [];
+    const { api, sleeps } = loadGas({ fetch: scripted([500, 503, 200], calls) });
+    api.postToLineInChunks("token", "target", ["hello"], []);
+    expect(calls).toEqual(["uuid-1", "uuid-1", "uuid-1"]);
+    expect(sleeps).toEqual([1000, 2000]);
+  });
+
+  test("409 on a retry means an earlier attempt was accepted", () => {
+    const calls = [];
+    const sent = [];
+    const { api } = loadGas({ fetch: scripted([new Error("timeout"), 409], calls) });
+    api.postToLineInChunks("token", "target", ["hello"], sent);
+    expect(sent).toEqual([[0]]);
+    expect(calls.length).toBe(2);
+  });
+
+  test("a lower-case retry-after header sets the wait", () => {
+    const { api, sleeps } = loadGas({ fetch: scripted([respond(429, { "retry-after": "7" }), 200], []) });
+    api.postToLineInChunks("token", "target", ["hello"], []);
+    expect(sleeps).toEqual([7000]);
+  });
+
+  test("401 is not retried", () => {
+    const calls = [];
+    const { api } = loadGas({ fetch: scripted([401, 200], calls) });
+    expect(() => api.postToLineInChunks("token", "target", ["hello"], [])).toThrow("(401)");
+    expect(calls.length).toBe(1);
+  });
+});
+
 describe("processFeed: ID ベースの既読", () => {
   const rawItems = (n) =>
     Array.from({ length: n }, (_, i) => ({
@@ -267,7 +307,8 @@ describe("processFeed: ID ベースの既読", () => {
         return { getResponseCode: () => 200, getContentText: () => "", getHeaders: () => ({}) };
       }
       pushCount++;
-      const code = pushCount === 2 && failOnce ? 500 : 200; // 2 番目の push だけ 1 回だけ失敗
+      // During the first run every push after the first fails (all retries included)
+      const code = pushCount >= 2 && failOnce ? 500 : 200;
       if (code < 400) captured.push({ url, params });
       return { getResponseCode: () => code, getContentText: () => "", getHeaders: () => ({}) };
     };
@@ -287,7 +328,7 @@ describe("processFeed: ID ベースの既読", () => {
     // 1 回目: push#1（記事 1〜5）は届く。push#2（記事 6〜10）が 500 → 既読を保存してから例外
     expect(() => api.processFeed(FEED)).toThrow("LINE 送信エラー (500)");
     expect(sentTitles(captured)).toEqual(titles().slice(0, 5));
-    expect(pushCount).toBe(2);
+    expect(pushCount).toBe(4); // push#1, then push#2 tried LINE_MAX_RETRIES (3) times
 
     // 届いた 5 件だけが既読に入る
     expect(JSON.parse(get("seenIds:" + FEED))).toEqual(keysOf(api, rawItems(5).map((it) => it.guid)));

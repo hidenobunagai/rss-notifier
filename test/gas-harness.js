@@ -30,6 +30,8 @@ const EXPORTS = [
  */
 export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lockBusy = false } = {}) {
   const store = new Map(Object.entries(properties));
+  const sleeps = [];
+  let uuid = 0;
   const noFetch = () => {
     throw new Error("UrlFetchApp.fetch がスタブされていません");
   };
@@ -47,7 +49,8 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lo
       getScriptLock: () => ({ tryLock: () => !lockBusy, releaseLock: () => {} }),
     },
     Utilities: {
-      sleep: () => {},
+      sleep: (ms) => void sleeps.push(ms),
+      getUuid: () => `uuid-${++uuid}`,
       formatDate: (date, tz, fmt) => date.toISOString(),
       DigestAlgorithm: { MD5: "md5" },
       Charset: { UTF_8: "utf8" },
@@ -67,7 +70,7 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lo
   const api = new Function(...names, `${source}\nreturn { ${EXPORTS.join(", ")} };`)(
     ...names.map((name) => gas[name]),
   );
-  return { api, get: (key) => store.get(key) };
+  return { api, get: (key) => store.get(key), sleeps };
 }
 
 /** GAS XmlService の要素を模した最小オブジェクト */
