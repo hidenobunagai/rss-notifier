@@ -496,6 +496,19 @@ describe("error reporting", () => {
   });
 });
 
+describe("validateSetup", () => {
+  test("is ready only when feeds, LINE and the checkFeeds trigger are all set up", () => {
+    expect(loadGas({ properties: LINE_SETUP, triggers: ["checkFeeds"] }).api.validateSetup()).toEqual({
+      ready: true,
+      warnings: [],
+      config: { feedUrls: [FEED], lineConfigured: true, triggerInstalled: true },
+    });
+    const missing = loadGas({ properties: LINE_SETUP, triggers: ["otherFunction"] }).api.validateSetup();
+    expect(missing.ready).toBe(false);
+    expect(missing.warnings).toEqual(["定期実行トリガがありません。createTimeTrigger() を実行してください。"]);
+  });
+});
+
 describe("script lock", () => {
   test("a run that cannot get the script lock sends nothing and leaves the read state alone", () => {
     const captured = [];

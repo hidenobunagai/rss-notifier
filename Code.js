@@ -826,6 +826,13 @@ function validateSetup() {
     warnings.push("通知先が未設定です。LINE の設定を行ってください。");
   }
 
+  config.triggerInstalled = ScriptApp.getProjectTriggers().some(
+    (trigger) => trigger.getHandlerFunction() === "checkFeeds",
+  );
+  if (!config.triggerInstalled) {
+    warnings.push("定期実行トリガがありません。createTimeTrigger() を実行してください。");
+  }
+
   return {
     ready: warnings.length === 0,
     warnings: warnings,

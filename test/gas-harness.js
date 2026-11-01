@@ -18,6 +18,7 @@ const EXPORTS = [
   "selectNewItems",
   "mergeSeenIds",
   "seenKey",
+  "validateSetup",
   "resolveLink",
 ];
 
@@ -28,7 +29,7 @@ const EXPORTS = [
  * `source` を渡すと `../Code.js` ではなくその文字列を評価する（定数を差し替えて
  * processFeed を複数 push させるケースの検証に使う）。
  */
-export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lockBusy = false } = {}) {
+export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lockBusy = false, triggers = [] } = {}) {
   const store = new Map(Object.entries(properties));
   const sleeps = [];
   let uuid = 0;
@@ -45,6 +46,9 @@ export function loadGas({ properties = {}, fetch, root, log, source = SOURCE, lo
       }),
     },
     UrlFetchApp: { fetch: fetch || noFetch },
+    ScriptApp: {
+      getProjectTriggers: () => triggers.map((handler) => ({ getHandlerFunction: () => handler })),
+    },
     LockService: {
       getScriptLock: () => ({ tryLock: () => !lockBusy, releaseLock: () => {} }),
     },
