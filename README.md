@@ -4,16 +4,18 @@
 [![Google Apps Script](https://img.shields.io/badge/Runtime-Google_Apps_Script-4285F4?style=flat-square&logo=google)](https://developers.google.com/apps-script)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 
-A lightweight Google Apps Script (GAS) service that monitors RSS/Atom feeds and dispatches real-time notifications to **LINE**.
+A lightweight Google Apps Script (GAS) service that monitors RSS/Atom feeds and sends notifications to **LINE**.
 
 ---
 
 ## ✨ Features
 
-- **Multi-Feed Polling**: Periodically fetches and parses multiple RSS 2.0 and Atom 1.0 feeds.
-- **LINE Notifications**: Delivers LINE Messaging API push messages.
-- **Spam & Rate-Limit Protection**: Enforces maximum notifications per run (`MAX_NOTIFICATIONS_PER_RUN`), sleep intervals, and LINE 429 exponential backoff retries.
-- **Persistent State**: Stores last-seen timestamps in `Script Properties` to prevent duplicate alerts across runs.
+- **Multi-Feed Polling**: Periodically fetches and parses RSS 2.0, RSS 1.0 (RDF) and Atom 1.0 feeds, honouring the XML declaration's encoding (e.g. Shift_JIS) when the server sends no charset.
+- **Quota-Friendly LINE Notifications**: New articles from all feeds are batched, so a run usually costs a single LINE push.
+- **Spam & Rate-Limit Protection**: Caps articles per feed per run (`MAX_NOTIFICATIONS_PER_RUN`), and retries 429 / 5xx / network errors with exponential backoff (or `Retry-After`). Each push carries an `X-Line-Retry-Key`, so a retry never delivers a message twice.
+- **Persistent Read State**: Stores hashed IDs of the newest 200 articles per feed in `Script Properties`, so articles are never notified twice, even in long feeds.
+- **Safe Feed Addition**: A newly added feed's existing articles are marked as read on its first check; only later articles are notified.
+- **Visible Failures**: Feed or LINE errors make the trigger run fail, so Apps Script emails you instead of failing silently.
 - **Zero Hosting Cost**: Runs completely serverless on Google Apps Script free quotas.
 
 ---
@@ -56,10 +58,12 @@ setFeedUrls([
   "https://example.com/feed",
   "https://blog.example.com/rss.xml"
 ]);
-
-// Mark existing articles as read (skips notifying past articles on initial run)
-markCurrentAsRead();
 ```
+
+Existing articles are marked as read automatically the first time each feed is
+checked, so you are not flooded with old articles. `markCurrentAsRead()` resets
+every feed to "all current articles read" (it also drops articles still waiting
+to be sent).
 
 > **Channel Activation Rules**:
 > - **LINE**: Enabled if both `lineChannelAccessToken` and `lineTargetId` are set.
@@ -70,17 +74,20 @@ markCurrentAsRead();
 createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 minutes
 ```
 
+Run `validateSetup()` afterwards: it reports missing feeds, LINE settings or trigger.
+
 ---
 
 ## ⚙️ Configuration Constants (`Code.js`)
 
 | Constant | Default | Description |
 | :--- | :--- | :--- |
-| `MAX_NOTIFICATIONS_PER_RUN` | `5` | Maximum notifications sent per execution (anti-spam) |
+| `MAX_NOTIFICATIONS_PER_RUN` | `5` | Maximum articles notified per feed per execution (anti-spam); the rest follow in later runs |
+| `MAX_SEEN_IDS` | `200` | Newest articles tracked per feed; older articles are ignored |
 | `LINE_MAX_TEXT_LENGTH` | `5000` | Maximum character length per LINE message |
 | `LINE_MAX_MESSAGES_PER_PUSH` | `5` | Maximum messages batched per LINE push call |
-| `LINE_CHUNK_INTERVAL_MS` | `1000` | Delay between consecutive LINE push requests in ms |
-| `LINE_MAX_RETRIES` | `3` | Maximum retry attempts for LINE API calls |
+| `LINE_CHUNK_INTERVAL_MS` | `1000` | Delay between consecutive LINE pushes, and the base retry backoff, in ms |
+| `LINE_MAX_RETRIES` | `3` | Maximum attempts per LINE push |
 
 ---
 
@@ -91,11 +98,11 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 | `setLineChannelAccessToken(token)` | Save LINE Channel Access Token to Script Properties |
 | `setLineTargetId(id)` | Save LINE Target ID (User/Group/Room) to Script Properties |
 | `setFeedUrls(urls)` | Save list of feed URLs to Script Properties |
-| `markCurrentAsRead()` | Mark all current latest feed items as seen |
+| `markCurrentAsRead()` | Reset every feed: mark all current articles as read |
 | `createTimeTrigger()` | Create 15-minute periodic trigger |
 | `deleteTimeTrigger()` | Remove the periodic trigger (pause monitoring) |
 | `checkFeeds()` | Manually trigger feed check and notification |
-| `validateSetup()` | Verify configuration and return diagnostics |
+| `validateSetup()` | Verify feeds, LINE settings and the trigger; return diagnostics |
 
 ---
 
@@ -112,17 +119,19 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 5. In Apps Script, execute `setLineChannelAccessToken(...)` and `setLineTargetId(...)`.
 
 ### LINE Quota Considerations
-- The **Free Light Plan** includes 1,000 push messages/month.
+- In Japan, the free **Communication plan** includes 200 messages/month (reduced from 1,000 in June 2023); the paid Light plan includes 5,000. Check the current plans for your region on [LINE for Business](https://www.lycbiz.com/jp/service/line-official-account/plan/).
+- Messages are counted per recipient. One run sends all new articles in one push (up to 5 text bubbles of 5,000 characters), so it usually costs one message per recipient.
 - Push messages can only reach users/groups that have added the bot as a friend.
 
 ---
 
 ## 🔍 Troubleshooting
 
-- **No notifications sent**: Ensure both `lineChannelAccessToken` + `lineTargetId` are configured. Run `validateSetup()` to diagnose.
+- **No notifications sent**: Run `validateSetup()` to check feeds, LINE settings and the trigger. Failed runs are listed under *Executions* in the Apps Script editor, and Apps Script emails the owner about trigger failures.
 - **LINE 401 Unauthorized**: Token is invalid or expired. Re-issue and update via `setLineChannelAccessToken(...)`.
 - **LINE 400 Bad Request**: Invalid target ID or bot is not a member of the group/friend list.
-- **LINE silent failure**: Free tier 1,000 monthly push message limit might be exhausted.
+- **LINE 429 Too Many Requests**: Rate limit, or the monthly message quota is used up (200 on the free plan in Japan).
+- **A newly added feed sends nothing**: Expected on its first check; its current articles are marked as read.
 
 ---
 
@@ -140,6 +149,7 @@ createTimeTrigger(); // Creates a cron trigger running checkFeeds() every 15 min
 │   ├── architecture.json# Archify specification schema
 │   └── architecture.png # archify PNG export (Export > PNG)
 ├── test/                # Local test suite (`bun test`)
+├── .github/workflows/   # CI: runs `bun test` on pushes and pull requests
 └── .claspignore         # Limits `clasp push` to GAS files (see below)
 ```
 
@@ -160,8 +170,8 @@ clasp status   # Tracked files: appsscript.json, Code.js
 When you add a GAS file, add a matching `!` line to `.claspignore`; if you forget, it
 shows up under "Untracked files" in `clasp status`.
 
-Pure functions (`safeParseDate`, `normalizeLineMessage`, chunking, item
-selection) are covered by a small harness that loads `Code.js` with stubbed GAS globals:
+Feed parsing, read-state handling, batching and LINE retries are covered by a small
+harness that loads `Code.js` with stubbed GAS globals (CI runs the same command):
 
 ```bash
 bun test
