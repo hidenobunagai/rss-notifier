@@ -34,6 +34,8 @@ const LINE_MAX_TEXT_LENGTH = 5000; // max characters per text message
 const LINE_MAX_MESSAGES_PER_PUSH = 5; // max messages per push
 const LINE_CHUNK_INTERVAL_MS = 1000; // pause between pushes, and the base retry backoff (ms)
 const LINE_MAX_RETRY_WAIT_MS = 30 * 1000; // upper bound for one retry wait, even with Retry-After
+const FEED_MAX_RETRIES = 3; // attempts per feed fetch (429 / 5xx / network errors only)
+const FEED_MAX_RETRY_WAIT_MS = 30 * 1000; // upper bound for one feed retry wait, even with Retry-After
 const LOCK_WAIT_MS = 30 * 1000; // how long a run waits for an overlapping run to finish
 
 // ===== Entry points =====
@@ -456,18 +458,56 @@ function fetchFeedItems(feedUrl) {
 }
 
 /**
+ * Fetches a feed response, retrying transient failures (429, 5xx and network
+ * errors) with exponential backoff, or the Retry-After header when present.
+ * Other 4xx responses fail immediately: retrying them cannot succeed. The
+ * wait is capped like the LINE retries, so a long Retry-After cannot push
+ * the run past Apps Script's 6-minute limit.
+ * @param {string} feedUrl
+ * @returns {GoogleAppsScript.URL_Fetch.HTTPResponse}
+ */
+function fetchFeedResponse(feedUrl) {
+  for (let attempt = 1; attempt <= FEED_MAX_RETRIES; attempt++) {
+    const backoffMs = LINE_CHUNK_INTERVAL_MS * Math.pow(2, attempt - 1);
+    let res;
+    try {
+      res = UrlFetchApp.fetch(feedUrl, {
+        muteHttpExceptions: true,
+      });
+    } catch (e) {
+      if (attempt < FEED_MAX_RETRIES) {
+        Logger.log(
+          `フィード取得で通信エラー。${backoffMs}ms 後にリトライ (${attempt}/${FEED_MAX_RETRIES}): ${feedUrl} - ${e}`,
+        );
+        Utilities.sleep(backoffMs);
+        continue;
+      }
+      throw e;
+    }
+    const code = res.getResponseCode();
+    if (code < 400) return res;
+    if ((code === 429 || code >= 500) && attempt < FEED_MAX_RETRIES) {
+      let waitMs = backoffMs;
+      const parsed = parseInt(getHeaderValue(res.getHeaders(), "Retry-After"), 10);
+      if (!Number.isNaN(parsed)) waitMs = Math.max(parsed, 0) * 1000;
+      waitMs = Math.min(waitMs, FEED_MAX_RETRY_WAIT_MS);
+      Logger.log(
+        `フィード取得で一時エラー (${code})。${waitMs}ms 後にリトライ (${attempt}/${FEED_MAX_RETRIES}): ${feedUrl}`,
+      );
+      Utilities.sleep(waitMs);
+      continue;
+    }
+    throw new Error("Fetch failed " + code + " for " + feedUrl);
+  }
+}
+
+/**
  * Fetches and parses a feed.
  * @param {string} feedUrl
  * @returns {{title: string, items: Array<{id: string, title: string, link: string, date: Date}>}}
  */
 function fetchFeed(feedUrl) {
-  const res = UrlFetchApp.fetch(feedUrl, {
-    muteHttpExceptions: true,
-  });
-  const code = res.getResponseCode();
-  if (code >= 400) {
-    throw new Error("Fetch failed " + code + " for " + feedUrl);
-  }
+  const res = fetchFeedResponse(feedUrl);
   const xmlText = decodeFeedText(res);
   const doc = XmlService.parse(xmlText);
   const root = doc.getRootElement();
