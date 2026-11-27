@@ -113,6 +113,78 @@ describe("parseRssChannel / fetchFeedItems", () => {
   });
 });
 
+describe("fetchFeed retries", () => {
+  const respond = (code, headers = {}) => ({
+    getResponseCode: () => code,
+    getContentText: () => "",
+    getHeaders: () => headers,
+  });
+  const scripted = (steps, calls) => () => {
+    calls.push(1);
+    const next = steps.shift();
+    if (next instanceof Error) throw next;
+    return next;
+  };
+
+  test("5xx は指数バックオフでリトライし、成功すれば記事を返す", () => {
+    const calls = [];
+    const root = rss([{ title: "A1", link: "https://example.com/1", guid: "a1" }]);
+    const { api, sleeps } = loadGas({ root, fetch: scripted([respond(500), respond(503), respond(200)], calls) });
+    expect(api.fetchFeedItems(FEED).map((it) => it.id)).toEqual(["a1"]);
+    expect(calls.length).toBe(3);
+    expect(sleeps).toEqual([1000, 2000]);
+  });
+
+  test("429 の Retry-After（小文字ヘッダ）が待機時間になる", () => {
+    const calls = [];
+    const { api, sleeps } = loadGas({
+      root: rss([]),
+      fetch: scripted([respond(429, { "retry-after": "7" }), respond(200)], calls),
+    });
+    api.fetchFeedItems(FEED);
+    expect(calls.length).toBe(2);
+    expect(sleeps).toEqual([7000]);
+  });
+
+  test("長い Retry-After は 30 秒で頭打ちになる", () => {
+    const { api, sleeps } = loadGas({
+      root: rss([]),
+      fetch: scripted([respond(503, { "Retry-After": "3600" }), respond(200)], []),
+    });
+    api.fetchFeedItems(FEED);
+    expect(sleeps).toEqual([30000]);
+  });
+
+  test("通信エラーもリトライする", () => {
+    const calls = [];
+    const { api, sleeps } = loadGas({
+      root: rss([]),
+      fetch: scripted([new Error("timeout"), respond(200)], calls),
+    });
+    api.fetchFeedItems(FEED);
+    expect(calls.length).toBe(2);
+    expect(sleeps).toEqual([1000]);
+  });
+
+  test("404 はリトライせず 1 回で例外にする", () => {
+    const calls = [];
+    const { api, sleeps } = loadGas({ root: rss([]), fetch: scripted([respond(404), respond(200)], calls) });
+    expect(() => api.fetchFeedItems(FEED)).toThrow("Fetch failed 404");
+    expect(calls.length).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  test("5xx が続く場合は上限まで試してから例外にする", () => {
+    const calls = [];
+    const { api } = loadGas({
+      root: rss([]),
+      fetch: scripted([respond(500), respond(500), respond(500), respond(200)], calls),
+    });
+    expect(() => api.fetchFeedItems(FEED)).toThrow("Fetch failed 500");
+    expect(calls.length).toBe(3);
+  });
+});
+
 describe("safeParseDate", () => {
   test("未指定・空文字・解析不能は 1970-01-01 (Date(0))", () => {
     const { api } = loadGas();
